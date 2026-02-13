@@ -1,0 +1,20 @@
+Exponent_set is a container for Gaussian exponent sets and optional contraction matrices.
+
+Each object stores one set of exponents indexed by angular momentum l = 0 … l_max.
+
+Exponents are stored as a list of 1D numpy arrays, one per angular momentum channel. Inputs can be either numpy arrays or compatible 1d containers convertible to numpy arrrays.
+
+Contractions are stored as a list of 2D numpy arrays with shape
+(n_primitives, n_contracted). If not provided, identity matrices are used as it is implicly assumed that the basis set is uncontracted (These are created even if Contracted = FALSE).
+
+The contracted flag is inferred from the contraction matrices unless explicitly set by the user, in which case it overrides all inferred values.
+
+Metadata fields include atom_name, method, label, and energy.
+
+The copy method returns a deep copy without simulation results (it is with is_copy = TRUE, used = FALSE).
+
+The save method writes the object to a .expo file at the desired location in the format: "atom_method_label.expo".
+
+The load / from_file class methods construct an object from a .expo file, note that labels are not saved in .expo files.
+
+The module validates array shapes and enforces internal consistency of exponent number versus contraction dimensionality and other aspects.

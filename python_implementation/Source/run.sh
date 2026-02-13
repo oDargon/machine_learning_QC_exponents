@@ -1,0 +1,1 @@
+molcas -f {{JOB_NAME}}

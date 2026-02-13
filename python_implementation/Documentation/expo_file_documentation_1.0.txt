@@ -1,0 +1,26 @@
+The .expo file type is a plain-text format for storing Gaussian exponent sets and optional contraction data for exponent optimization.
+
+Lines starting with # are comments and ignored.
+
+Metadata appears at the top of the file in the form
+KEY: VALUE
+
+Supported metadata keys are:
+ATOM (default: X)
+METHOD (default: Unknown)
+ENERGY (float or NONE)
+CONTRACTED (TRUE or FALSE)
+
+Metadata fields are optional when loading, but always written when saving.
+
+- The file must contain an <EXPONENTS> block. If this block is missing, loading fails.
+
+- <EXPONENTS> First line: number of angular momentum channels (l = 0, 1, …). For each channel: - line with number of primitive exponents - line with exponent values
+
+- If CONTRACTED is TRUE, a <CONTRACTION> block must be present, otherwise loading fails. If CONTRACTED is FALSE but there is still a <CONTRACTION> block, it will NOT be read. However, if the CONTRACTED field is missing the it will still try to find the <CONTRACTION> block and read it.
+
+- <CONTRACTION> First line: number of contraction matrices (must match number of exponent channels). For each channel: - line with number of contracted functions - contraction matrix written row-wise (rows = primitives)
+
+- Contraction matrices have shape (n_primitives, n_contracted). Identity matrices represent uncontracted shells but do not override the CONTRACTED flag.
+
+- Block order is fixed: metadata → <EXPONENTS> → optional <CONTRACTION>

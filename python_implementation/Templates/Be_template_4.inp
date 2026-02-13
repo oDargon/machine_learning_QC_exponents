@@ -1,0 +1,25 @@
+ &gateway
+expert
+ basis set
+Be.....  / inline
+    4      2
+    3 3
+EXPS0
+*  p-type ANO's (max 7 functions can be used)
+    6 6
+EXPS1
+*  d-type ANO's (max 4 functions can be used)
+EXPS2
+    9 9
+Be 0 0 0  
+end of basis
+ &seward
+
+ &rasscf
+ inactive
+ 0
+ ras2
+ 9
+ charge
+ 0
+ &caspt2

@@ -1,0 +1,25 @@
+--- Start Module: auto at Fri Feb 13 17:18:26 2026 
+--- Start Module: gateway at Fri Feb 13 17:18:26 2026 
+--- Stop Module:  gateway at Fri Feb 13 17:18:26 2026 /rc=0 ---
+*** files:   xmldump
+    saved to directory /home/dzemail/Desktop/Code_Projects/PHD_work/ML_EXP/python_implementation/Source/RUN1/job_8
+
+--- Start Module: seward at Fri Feb 13 17:18:26 2026 
+--- Stop Module:  seward at Fri Feb 13 17:18:27 2026 /rc=0 ---
+*** files:   input.guessorb.molden input.GssOrb xmldump
+    saved to directory /home/dzemail/Desktop/Code_Projects/PHD_work/ML_EXP/python_implementation/Source/RUN1/job_8
+
+*** Making symbolic link for INPORB -> /tmp/input.257590/input.GssOrb
+--- Start Module: rasscf at Fri Feb 13 17:18:27 2026 
+--- Stop Module:  rasscf at Fri Feb 13 17:18:28 2026 /rc=0 ---
+*** files:   input.RasOrb input.RasOrb input.SpdOrb input.rasscf.molden xmldump
+    saved to directory /home/dzemail/Desktop/Code_Projects/PHD_work/ML_EXP/python_implementation/Source/RUN1/job_8
+
+*** Making symbolic link for INPORB -> /tmp/input.257590/input.RasOrb
+--- Start Module: caspt2 at Fri Feb 13 17:18:28 2026 
+--- Stop Module:  caspt2 at Fri Feb 13 17:18:29 2026 /rc=0 ---
+*** files:   xmldump
+    saved to directory /home/dzemail/Desktop/Code_Projects/PHD_work/ML_EXP/python_implementation/Source/RUN1/job_8
+
+    Timing: Wall=3 User=1.87 System=0.56 
+--- Stop Module:  auto at Fri Feb 13 17:18:29 2026 /rc=0 ---
