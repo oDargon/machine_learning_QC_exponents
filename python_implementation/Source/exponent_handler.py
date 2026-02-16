@@ -1,20 +1,19 @@
-from typing import Optional, List
-from numpy import ndarray, float64, eye, array
+from typing import Optional, List, Sequence, Union
+from numpy import allclose, delete, ndarray, float64, eye, array
 from pathlib import Path
-import os
 
 
 class Exponent_Set:
     def __init__(
         self,
-        label: Optional[int]         = None,
-        atom_name: Optional[str]     = None,
-        exponents: Optional[List]    = None,
-        contractions: Optional[List] = None,
-        method: Optional[str]        = None,
+        label: Optional[int]                                              = None,
+        atom_name: Optional[str]                                          = None,
+        exponents: Optional[List[Sequence[float] | ndarray]]              = None,
+        contractions: Optional[List[Sequence[Sequence[float]] | ndarray]] = None,
+        method: Optional[str]                                             = None,
         *,
-        contracted: Optional[bool]   = None,
-        energy: Optional[bool]       = None
+        contracted: Optional[bool]                                        = None,
+        energy: Optional[float]                                           = None
     ):
         # ---- metadata ----
         self.label: Optional[int] = label
@@ -43,7 +42,7 @@ class Exponent_Set:
 
     # ---------------- validation helpers ----------------
 
-    def _initialize(self):
+    def _initialize(self) -> None:
         self.exponents.clear()
         self.contractions.clear()
         self.lengths.clear()
@@ -55,6 +54,9 @@ class Exponent_Set:
                 exp_arr = array(exp, dtype=float64)
                 self._validate_exponents(exp_arr, i)
                 self.exponents.append(exp_arr)
+ 
+        if  self._raw_contractions is not None and len(self._raw_contractions) != len(self.exponents):
+            raise ValueError("Number of contraction shells must match exponent shells")
 
         # normalize contractions
         if self._raw_contractions is not None:
@@ -84,19 +86,19 @@ class Exponent_Set:
             self.lengths.append(exp.shape[0])
             self.n_contracted.append(cont.shape[1])
 
-    def _is_identity(self, mat):
+    def _is_identity(self, mat: ndarray, *, rtol=1e-12, atol=1e-14) -> bool:
         n, m = mat.shape
         if n != m:
             return False
-        return (mat == eye(n, dtype=mat.dtype)).all()
+        return allclose(mat, eye(n, dtype=mat.dtype), rtol=rtol, atol=atol)
 
     @staticmethod
-    def _validate_exponents(exp: ndarray, idx: int):
+    def _validate_exponents(exp: ndarray, idx: int) -> None:
         if exp.ndim != 1:
             raise ValueError(f"exponents[{idx}] must be 1D")
 
     @staticmethod
-    def _validate_contractions(cont: ndarray, exp: ndarray, idx: int):
+    def _validate_contractions(cont: ndarray, exp: ndarray, idx: int) -> None:
         if cont.ndim != 2:
             raise ValueError(f"contractions[{idx}] must be 2D")
         if cont.shape[0] != exp.shape[0]:
@@ -107,7 +109,7 @@ class Exponent_Set:
 
     # ---------------- core behavior ----------------
 
-    def copy(self):
+    def copy_without_energy(self) -> "Exponent_Set":
         exponents_copy = [exp.copy() for exp in self.exponents]
         contractions_copy = [cont.copy() for cont in self.contractions]
 
@@ -127,14 +129,14 @@ class Exponent_Set:
         return new
 
 
-    def assign_results(self, *, energy: Optional[float] = None):
+    def assign_results(self, *, energy: Optional[float] = None) -> None:
         if energy is not None:
             self.energy = float(energy)
         self.used = True
 
     # ---------------- presentation ----------------
 
-    def __str__(self):
+    def __str__(self) -> str:
         lines = []
 
         l_max = len(self.exponents) - 1 if self.exponents else -1
@@ -168,49 +170,59 @@ class Exponent_Set:
 
         return "\n".join(lines)
 
-    def print_exponents(self):
+    def print_exponents(self) -> None:
         print(f"Exponents for set with label {self.label}:")
         for i in range(len(self.exponents)):
             print(f"    l = {i}")
-            print(f"    f{self.exponents[i]}")
+            print(f"    {self.exponents[i]}")
 
 
-    def save(self, directory: str = ".", filename: Optional[str] = None, *, overwrite: bool = False,) -> str:
+    def save(
+        self,
+        directory: Union[str, Path] = ".",
+        filename: Optional[str] = None,
+        *,
+        overwrite: bool = False,
+    ) -> Path:
+
+        # ---------- normalize path ----------
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+
         # ---------- filename ----------
         if filename is None:
-            atom     = self.atom_name if self.atom_name is not None else "X"
-            label    = self.label if self.label is not None else "nolabel"
+            atom = self.atom_name or "X"
+            label = self.label if self.label is not None else "nolabel"
             filename = f"{atom}_{label}.expo"
 
         if not filename.endswith(".expo"):
             filename += ".expo"
 
-        os.makedirs(directory, exist_ok=True)
-        path = os.path.join(directory, filename)
+        path = directory / filename
 
-        if os.path.exists(path) and not overwrite:
+        if path.exists() and not overwrite:
             raise FileExistsError(f"File already exists: {path}")
 
         # ---------- defaults ----------
-        atom       = self.atom_name if self.atom_name is not None else "X"
-        method     = self.method if self.method is not None else "Unknown"
-        energy     = "NONE" if self.energy is None else f"{self.energy:.16e}"
+        atom = self.atom_name or "X"
+        method = self.method or "Unknown"
+        energy = "NONE" if self.energy is None else f"{self.energy:.16e}"
         contracted = self.contracted
 
         # ---------- write ----------
-        with open(path, "w") as f:
-            # metadata (always written, fixed order)
+        with path.open("w") as f:
+            # metadata
             f.write(f"ATOM: {atom}\n")
             f.write(f"ENERGY: {energy}\n")
             f.write(f"CONTRACTED: {'TRUE' if contracted else 'FALSE'}\n")
 
-            # -------- method (optional) --------
-            if (method != "Unknown"):
+            # method (optional)
+            if method != "Unknown":
                 f.write("<METHOD>\n")
-                f.write(method)
-                f.write("\n</METHOD>\n")
+                f.write(method.rstrip() + "\n")
+                f.write("</METHOD>\n")
 
-            # -------- exponents --------
+            # exponents
             f.write("<EXPONENTS>\n")
             f.write(f"{len(self.exponents)}\n")
 
@@ -220,7 +232,7 @@ class Exponent_Set:
 
             f.write("</EXPONENTS>")
 
-            # -------- contractions (optional) --------
+            # contractions (optional)
             if contracted:
                 f.write("\n<CONTRACTION>\n")
                 f.write(f"{len(self.contractions)}\n")
@@ -236,7 +248,7 @@ class Exponent_Set:
         return path
     
     @classmethod
-    def load(cls, path):
+    def load(cls, path: str | Path) -> "Exponent_Set":
         path = Path(path)  # ensure it's a Path object
 
         if path.suffix.lower() != ".expo":
@@ -255,7 +267,6 @@ class Exponent_Set:
 
         # ---------------- defaults ----------------
         atom       = None
-        method     = None
         energy     = None
         contracted = None
 
@@ -281,11 +292,6 @@ class Exponent_Set:
                 i += 1
                 continue
 
-            if line.startswith("METHOD:"):
-                method = line.split(":", 1)[1].strip()
-                i += 1
-                continue
-
             if line.startswith("ENERGY:"):
                 val = line.split(":", 1)[1].strip()
                 energy = None if val == "NONE" else float(val)
@@ -306,15 +312,16 @@ class Exponent_Set:
                 found_method = True
                 i += 1
 
-                method = ""
+                method_lines = []
+                while True:
+                    if i >= n:
+                        raise ValueError("Unexpected end of file inside <METHOD> block")
+                    if lines[i] == "</METHOD>":
+                        break
+                    method_lines.append(lines[i])
+                    i += 1
 
-                while (lines[i] != "</METHOD>"):
-                    if (i >= len(lines)):
-                        raise ValueError("Missing </METHOD>")
-
-                    method += lines[i]
-                    method += "\n"
-                    i      += 1
+                method = "\n".join(method_lines)
                 i += 1
                 continue
 
@@ -324,50 +331,69 @@ class Exponent_Set:
                 found_exponents = True
                 i += 1
 
+                if i >= n:
+                    raise ValueError("Unexpected end of file while reading number of exponent shells")
                 n_shells = int(lines[i])
                 i += 1
 
                 for q in range(n_shells):
+                    if i >= n:
+                        raise ValueError(f"Unexpected end of file while reading number of primitives for shell {q}")
                     n_prim = int(lines[i])
                     i += 1
 
+                    if i >= n:
+                        raise ValueError(f"Unexpected end of file while reading exponents for shell {q}")
                     vals = list(map(float, lines[i].split()))
                     if len(vals) != n_prim:
-                        raise ValueError("Exponent count mismatch")
+                        raise ValueError(f"Exponent count mismatch in shell {q}")
                     exponents_raw.append(vals)
                     i += 1
 
-                if lines[i] != "</EXPONENTS>":
-                    raise ValueError("Missing </EXPONENTS>")
+                if i >= n or lines[i] != "</EXPONENTS>":
+                    raise ValueError("Missing </EXPONENTS> block")
                 i += 1
                 continue
+
 
             # ---------- CONTRACTION ----------
             if line == "<CONTRACTION>":
                 found_contraction = True
                 i += 1
 
+                if i >= n:
+                    raise ValueError("Unexpected end of file while reading <CONTRACTION> block header")
                 n_shells = int(lines[i])
                 i += 1
 
+                if n_shells != len(exponents_raw):
+                    raise ValueError(
+                        "Number of contraction shells does not match number of exponent shells"
+                    )
+
                 for l in range(n_shells):
+                    if i >= n:
+                        raise ValueError(f"Unexpected end of file while reading number of contracted functions for shell {l}")
                     n_cont = int(lines[i])
                     i += 1
 
                     rows = []
                     for q in range(len(exponents_raw[l])):
+                        if i >= n:
+                            raise ValueError(f"Unexpected end of file while reading contraction row {q} for shell {l}")
                         row = list(map(float, lines[i].split()))
                         if len(row) != n_cont:
-                            raise ValueError("Contraction row size mismatch")
+                            raise ValueError(f"Contraction row size mismatch in shell {l}, row {q}")
                         rows.append(row)
                         i += 1
 
                     contractions_raw.append(rows)
 
-                if lines[i] != "</CONTRACTION>":
-                    raise ValueError("Missing </CONTRACTION>")
+                if i >= n or lines[i] != "</CONTRACTION>":
+                    raise ValueError("Missing </CONTRACTION> block")
                 i += 1
                 continue
+
 
             # ---------- unknown ----------
             raise ValueError(f"Unrecognized line: {line}")
@@ -399,5 +425,54 @@ class Exponent_Set:
         )
 
     @classmethod
-    def from_file(cls, path: str):
+    def from_file(cls, path: str) -> "Exponent_Set":
         return cls.load(path)
+
+    def remove_exponent_uncontracted(self, l: int, q: int) -> None:
+        if l < 0 or l >= len(self.exponents):
+            raise IndexError(f"Invalid shell index l={l}")
+        if q < 0 or q >= self.lengths[l]:
+            raise IndexError(f"Invalid exponent index q={q} for shell l={l}")
+        
+        # Update lengths
+        self.lengths[l]  -= 1
+        self.exponents[l] = delete(self.exponents[l], q)
+
+        if self.contracted:
+            raise ValueError("Exponent set is contracted; cannot remove exponent without updating contraction matrix. Use remove_exponent_contracted() instead.")
+        
+        else:
+            # If not contracted, we need to maintain the invariant that the contraction matrix is identity
+            n = self.lengths[l]
+            self.n_contracted[l] = n
+            self.contractions[l] = eye(n, dtype=float64)
+
+    def add_exponent_uncontracted(self, l: int, value: float) -> None:
+        if l < 0 or l >= len(self.exponents):
+            raise IndexError(f"Invalid shell index l={l}")
+        
+        # Update lengths
+        self.lengths[l]  += 1
+        self.exponents[l] = array(list(self.exponents[l]) + [value], dtype=float64)
+
+        if self.contracted:
+            raise ValueError("Exponent set is contracted; cannot add exponent without updating contraction matrix. Use add_exponent_contracted() instead.")
+        
+        else:
+            # If not contracted, we need to maintain the invariant that the contraction matrix is identity
+            n = self.lengths[l]
+            self.n_contracted[l] = n
+            self.contractions[l] = eye(n, dtype=float64)
+
+    def change_exponent_uncontracted(self, l: int, q: int, value: float) -> None:
+        if l < 0 or l >= len(self.exponents):
+            raise IndexError(f"Invalid shell index l={l}")
+        if q < 0 or q >= self.lengths[l]:
+            raise IndexError(f"Invalid exponent index q={q} for shell l={l}")
+        
+        if not self.contracted:
+            raise ValueError("Exponent set is not contracted; cannot change exponent with this method. Use change_exponent_uncontracted() instead.")
+        
+        self.exponents[l][q] = value
+
+        

@@ -22,11 +22,15 @@ class Bash_Handle(Handle):
     Handle for local bash/subprocess jobs.
     Wraps a subprocess.Popen object.
     """
-    def __init__(self, process: subprocess.Popen):
+    def __init__(self, process: subprocess.Popen, output_handle):
         self.process = process
+        self.output_handle = output_handle
 
     def is_finished(self) -> bool:
-        return self.process.poll() is not None
+        finished = self.process.poll() is not None
+        if finished and not self.output_handle.closed:
+            self.output_handle.close()
+        return finished
 
     def return_code(self):
         return self.process.poll()

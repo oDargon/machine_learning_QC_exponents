@@ -1,6 +1,7 @@
 from pathlib import Path
 from enum import Enum
 import re
+import shutil
 from exponent_handler import *
 from handles import *
 
@@ -38,7 +39,7 @@ class Molcas_Job:
         self.handle        = None #Handle used by the manager to asses job completion
 
         # Freeze exponent_set inside job
-        self.exponent_set = exponent_set.copy()
+        self.exponent_set = exponent_set.copy_without_energy()
         self.overwrite    = overwrite
 
         # Runtime state
@@ -52,8 +53,11 @@ class Molcas_Job:
 
     
     def prepare_job(self):
-        print("Sexy")
         if (self.logging): print(f"[MolcasJob] Preparing job '{self.job_id}' in {self.job_dir}")
+
+
+        if self.status != Job_Status.CREATED:
+            raise RuntimeError("Job already prepared or processed")
 
         self.exponent_set.label = self.job_id
 
@@ -61,7 +65,12 @@ class Molcas_Job:
             if not self.overwrite:
                 raise FileExistsError(f"Job directory {self.job_dir} already exists")
             else:
-                import shutil
+                # ---- SAFETY GUARD ----
+                if len(self.job_dir.resolve().parts) < 3:
+                    raise RuntimeError(
+                        f"Refusing to delete shallow directory: {self.job_dir}"
+                    )
+
                 shutil.rmtree(self.job_dir)
 
         self.job_dir.mkdir(parents=True)
@@ -100,7 +109,8 @@ class Molcas_Job:
 
     def make_input_from_template(self):
 
-        if (self.logging): print(f"[MolcasJob] Writing input to {self.input_file}")
+        if self.logging:
+            print(f"[MolcasJob] Writing input to {self.input_file}")
 
         with open(self.template_path) as f:
             text = f.read()
@@ -108,16 +118,25 @@ class Molcas_Job:
         pattern  = re.compile(r"(NUMS|EXPS|CONT)(\d+)")
         new_text = pattern.sub(self.replacer, text)
 
+        # ---- VALIDATION ----
+        if pattern.search(new_text):
+            raise ValueError(
+                f"Unresolved placeholders remain in template for job {self.job_id}"
+            )
+
         with open(self.input_file, "w") as f:
             f.write(new_text)
 
 
     def update_from_output(self):
+        if self.status != Job_Status.SUBMITTED:
+            raise RuntimeError("Cannot update job that wasn't submitted")
+        
         if not self.output_file.exists():
             self.status = Job_Status.FAILED
             if self.logging:
                 print(f"[MolcasJob] Output file not found for job '{self.job_id}'. Marked as FAILED.")
-            self._save_exponent_file()
+            self.save_exponent_file()
             return
 
         # Extract energy
@@ -193,8 +212,6 @@ class Molcas_Job:
         if not self.output_file.exists():
             return None
 
-        print(self.output_file)
-
         with open(self.output_file) as f:
             for line in f:
                 if "::" in line:
@@ -202,13 +219,17 @@ class Molcas_Job:
                     for token in reversed(parts):
                         try:
                             energy = float(token)
-                            return energy
+                            break   # stop scanning tokens in this line
                         except ValueError:
                             continue
 
-        return None
+        return energy
 
     
 
     def mark_submitted(self):
+
+        if self.status != Job_Status.PREPARED:
+            raise RuntimeError("Cannot submit unprepared job")
+
         self.status = Job_Status.SUBMITTED

@@ -13,18 +13,21 @@ dest_dir     = BASE_DIR / "RUN1"
 
 exp = Exponent_Set.from_file(exp_path)
 
+print(BASE_DIR)
+
 M = Job_Manager(
     ExecutorType.LOCAL_BASH,
     submit_scr,
     dest_dir,
-    full_logging=True
+    full_logging=True,
+    overwrite_existing=True
 )
 
 
 # M.add_job(exp, template_dir)
 
 for i in range(10):
-    exp_copy = exp.copy()
+    exp_copy = exp.copy_without_energy()
     exp_copy.exponents[0] *= (1 + 0.001 * i)
     M.add_job(exp_copy, template_dir)
 
