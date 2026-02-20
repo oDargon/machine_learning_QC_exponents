@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Optional, Callable, List
 from enum import Enum
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from molcas_handler import *
 from handles import *
@@ -9,16 +10,33 @@ import time
 import shutil
 
 
-class ExecutorType(Enum):
+
+
+
+
+
+class Executor_Type(Enum):
     LOCAL_BASH = "local_bash"
     SLURM      = "slurm"
 
+
+@dataclass
+class Job_Manager_Config:
+    executor_type: Optional[Executor_Type] = None
+    execution_script: Optional[Path]      = None
+    group_dir_name: Optional[str]         = None
+    group_dir_path: Optional[Path]        = None
+    auto_run: bool                        = False
+    custom_executor: Optional[Callable]   = None
+    full_logging: bool                    = False
+    manager_logging: bool                 = False
+    overwrite_existing: bool              = False
 
 class Job_Manager:
 
     def __init__(
         self,
-        executor_type: ExecutorType,
+        executor_type: Executor_Type,
         execution_script: str | Path,
         group_dir_name: Optional[str] = None,   
         *,
@@ -35,7 +53,7 @@ class Job_Manager:
             raise FileNotFoundError(
                 f"Execution script not found: {self.execution_script}"
             )
-        self.base_dir         = self.execution_script.parent
+        self.base_dir                 = self.execution_script.parent
 
         self.auto_run: bool           = auto_run
         self.jobs: List[Molcas_Job]   = []
@@ -80,7 +98,7 @@ class Job_Manager:
         base_name = group_dir_name or datetime.now().strftime("%Y%m%d_%H%M%S")
         return (self.base_dir / base_name).resolve()
     
-    def get_builtin_executor(self, type: ExecutorType ):
+    def get_builtin_executor(self, type: Executor_Type ):
         try:
             return executor_map[type]
         except KeyError:
@@ -264,6 +282,20 @@ class Job_Manager:
         copy_manager.all_jobs_ran = False
 
         return copy_manager
+    
+    @classmethod
+    def from_config(cls, config: Job_Manager_Config) -> "Job_Manager":
+        return cls(
+            executor_type      = config.executor_type,
+            execution_script   = config.execution_script,
+            group_dir_name     = config.group_dir_name,
+            group_dir_path     = config.group_dir_path,
+            auto_run           = config.auto_run,
+            custom_executor    = config.custom_executor,
+            full_logging       = config.full_logging,
+            manager_logging    = config.manager_logging,
+            overwrite_existing = config.overwrite_existing
+        )
         
         
         
@@ -319,6 +351,6 @@ def slurm_executor(job: Molcas_Job, script_template_path):
 
 
 executor_map = {
-    ExecutorType.LOCAL_BASH: local_bash_executor,
-    ExecutorType.SLURM:      slurm_executor,
+    Executor_Type.LOCAL_BASH: local_bash_executor,
+    Executor_Type.SLURM:      slurm_executor,
 }

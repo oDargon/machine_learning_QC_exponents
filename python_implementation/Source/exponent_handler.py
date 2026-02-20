@@ -470,8 +470,8 @@ class Exponent_Set:
         if q < 0 or q >= self.lengths[l]:
             raise IndexError(f"Invalid exponent index q={q} for shell l={l}")
         
-        if not self.contracted:
-            raise ValueError("Exponent set is not contracted; cannot change exponent with this method. Use change_exponent_uncontracted() instead.")
+        if self.contracted:
+            raise ValueError("Exponent set is contracted; cannot change exponent with this method. Use change_exponent_uncontracted() instead.")
         
         self.exponents[l][q] = value
 

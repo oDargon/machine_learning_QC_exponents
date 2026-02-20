@@ -1,0 +1,72 @@
+# =========================
+# Expo / Simulation files
+# =========================
+*.expo
+*.inp
+*.input
+
+# =========================
+# Generic data & info files
+# =========================
+*.dat
+*.data
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.json
+*.xml
+*.yaml
+*.yml
+*.txt
+*.log
+*.out
+*.info
+*.cfg
+*.conf
+
+# =========================
+# Binary / scientific data
+# =========================
+*.bin
+*.h5
+*.hdf5
+*.nc
+*.npy
+*.npz
+*.mat
+
+# =========================
+# Python artifacts
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.env
+
+# =========================
+# OS / editor junk
+# =========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# =========================
+# Build / temp files
+# =========================
+build/
+dist/
+*.tmp
+*.bak
+
+# =========================
+# Project-specific ignores
+# =========================
+/python_implementation/Work/

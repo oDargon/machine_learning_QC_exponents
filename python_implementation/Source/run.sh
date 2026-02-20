@@ -1,1 +1,1 @@
-molcas -f {{JOB_NAME}}
+molcas -clean -f {{JOB_NAME}}
