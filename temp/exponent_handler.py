@@ -1,5 +1,5 @@
 from typing import Optional, List, Sequence, Union
-from numpy import allclose, argsort, delete, ndarray, float64, eye, array
+from numpy import allclose, delete, ndarray, float64, eye, array
 from pathlib import Path
 
 
@@ -86,8 +86,6 @@ class Exponent_Set:
             self.lengths.append(exp.shape[0])
             self.n_contracted.append(cont.shape[1])
 
-        self._ensure_descending_all()
-
     def _is_identity(self, mat: ndarray, *, rtol=1e-12, atol=1e-14) -> bool:
         n, m = mat.shape
         if n != m:
@@ -108,28 +106,6 @@ class Exponent_Set:
                 f"contractions[{idx}] rows must match number of exponents"
             )
 
-    def _ensure_descending_all(self) -> None:
-        """
-        Ensure all shells have exponents sorted descending.
-        If any shell is not sorted, reorder exponents and, if contracted, the contraction matrix rows.
-        """
-        for l, exp in enumerate(self.exponents):
-            if exp.size <= 1:
-                continue  # nothing to do
-
-            # Check if already sorted (fast path)
-            if (exp[:-1] >= exp[1:]).all():
-                continue
-
-            # Compute descending order indices
-            order = argsort(exp)[::-1]
-
-            # Reorder exponents
-            self.exponents[l] = exp[order]
-
-            # Reorder contraction matrix rows only if contracted
-            if self.contracted:
-                self.contractions[l] = self.contractions[l][order, :]
 
     # ---------------- core behavior ----------------
 
@@ -452,8 +428,6 @@ class Exponent_Set:
     def from_file(cls, path: str) -> "Exponent_Set":
         return cls.load(path)
 
-
-#TO DO: FIX THE LACKING CHECK FOR ORDER/REMOVE UNNECESSARY METHODS
     def remove_exponent_uncontracted(self, l: int, q: int) -> None:
         if l < 0 or l >= len(self.exponents):
             raise IndexError(f"Invalid shell index l={l}")
@@ -496,24 +470,9 @@ class Exponent_Set:
         if q < 0 or q >= self.lengths[l]:
             raise IndexError(f"Invalid exponent index q={q} for shell l={l}")
         
-        if self.contracted:
-            raise ValueError("Exponent set is contracted; cannot change exponent with this method. Use change_exponent_uncontracted() instead.")
+        if not self.contracted:
+            raise ValueError("Exponent set is not contracted; cannot change exponent with this method. Use change_exponent_uncontracted() instead.")
         
         self.exponents[l][q] = value
-#/TO DO: FIX THE LACKING CHECK FOR ORDER/REMOVE UNNECESSARY METHODS
-
-    def update_exponent_uncontracted_from_flat_same_shape(self, new_exponents: ndarray) -> None:
-
-        if self.contracted:
-            raise ValueError("Exponent set is contracted; cannot update exponents with this method. Use update_exponent_contracted_from_flat() instead.")
-        
-        if len(new_exponents) != sum(self.lengths):
-            raise ValueError("Length of new_exponents does not match total number of exponents defined by exponents_shape")
-
-        idx = 0
-        for l, n in enumerate(self.lengths):
-            self.exponents[l] = array(new_exponents[idx:idx+n], dtype=float64)
-            idx += n
-
 
         
