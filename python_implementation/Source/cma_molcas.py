@@ -149,8 +149,8 @@ def cma_fixed_exponent_count(
             f"T {hms(elapsed)}"
         )
 
-        if es.stop():
-            break
+        # if es.stop():
+        #     break
 
     # Convert best vector back into Exponent_Set
     best_vector = es.result.xbest

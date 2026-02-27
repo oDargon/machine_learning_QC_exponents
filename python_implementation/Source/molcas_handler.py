@@ -160,11 +160,18 @@ class Molcas_Job:
         if self.logging:
             print(f"[MolcasJob] Job '{self.job_id}' completed. Energy: {energy}")
 
-    def save_exponent_file(self):
-        if self.expo_name == "None":
-            self.exponent_set.save(self.job_dir)
+    def save_exponent_file(self, custom_location: Path | str = None):
+
+        if custom_location is not None:
+            if self.expo_name == "None":
+                self.exponent_set.save(custom_location)
+            else:
+                self.exponent_set.save(custom_location, self.expo_name)
         else:
-            self.exponent_set.save(self.job_dir, self.expo_name)
+            if self.expo_name == "None":
+                self.exponent_set.save(self.job_dir)
+            else:
+                self.exponent_set.save(self.job_dir, self.expo_name)
 
 
     def extract_method_from_template(self):

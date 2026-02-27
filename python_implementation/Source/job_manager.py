@@ -23,14 +23,14 @@ class Executor_Type(Enum):
 @dataclass
 class Job_Manager_Config:
     executor_type: Optional[Executor_Type] = None
-    execution_script: Optional[Path]      = None
-    group_dir_name: Optional[str]         = None
-    group_dir_path: Optional[Path]        = None
-    auto_run: bool                        = False
-    custom_executor: Optional[Callable]   = None
-    full_logging: bool                    = False
-    manager_logging: bool                 = False
-    overwrite_existing: bool              = False
+    execution_script: Optional[Path]       = None
+    group_dir_name: Optional[str]          = None
+    group_dir_path: Optional[Path]         = None
+    auto_run: bool                         = False
+    custom_executor: Optional[Callable]    = None
+    full_logging: bool                     = False
+    manager_logging: bool                  = False
+    overwrite_existing: bool               = False
 
 class Job_Manager:
 
@@ -212,7 +212,7 @@ class Job_Manager:
 
         for job in self.jobs:
             if job.status == Job_Status.COMPLETED:
-                job.exponent_set.save(results_dir)
+                job.save_exponent_file(results_dir)
                 collected_files += 1
         
         if self.full_logging:

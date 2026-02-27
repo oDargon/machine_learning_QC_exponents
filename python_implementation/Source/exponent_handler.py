@@ -1,5 +1,5 @@
 from typing import Optional, List, Sequence, Union
-from numpy import allclose, argsort, delete, ndarray, float64, eye, array
+from numpy import allclose, argsort, delete, ndarray, float64, eye, array, hstack
 from pathlib import Path
 
 
@@ -515,5 +515,7 @@ class Exponent_Set:
             self.exponents[l] = array(new_exponents[idx:idx+n], dtype=float64)
             idx += n
 
+    def flatten_exps(self) -> ndarray:
+        return hstack(self.exponents)
 
         

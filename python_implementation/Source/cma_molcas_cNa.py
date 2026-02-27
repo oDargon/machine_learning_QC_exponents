@@ -326,6 +326,10 @@ def cma_culling_mixed(
 
             current_exp = optimized_exp
             last_energy = optimized_exp.energy
+    
+        log_f.write(
+                f"\n=== CMA CULLING END {datetime.now().isoformat(timespec='seconds')} ===\n")
+        log_f.flush()
 
 
 

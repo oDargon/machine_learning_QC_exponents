@@ -91,3 +91,5 @@ yarn-error.log*
 *.html
 
 python_implementation/temp/*
+python_implementation/Results/*
+python_implementation/Work/*

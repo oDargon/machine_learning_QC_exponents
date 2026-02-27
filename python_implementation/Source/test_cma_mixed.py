@@ -30,6 +30,6 @@ C = Job_Manager_Config(
 
 # cma_fixed_exponent_count( exp, C, work_dir, template_dir1, 48, 0.2, 100, overwrite=True, molcas_threads=6, logging=True )
 
-cma_culling(exp, C, work_dir, template_dir1, 15, logging=2, molcas_threads=12, overwrite=True, max_generations= 100, generation_size=48, optimize_initial=True, overwrite_gens=True )
+# cma_culling(exp, C, work_dir, template_dir1, 20, logging=2, molcas_threads=12, overwrite=True, max_generations= 150, generation_size=60, optimize_initial=True, overwrite_gens=True )
 
-cma_culling_mixed( exp, C, work_dir2, [template_dir1,template_dir2,template_dir3], 15, logging=2, molcas_threads=12, overwrite=True, max_generations= 100, generation_size=48, optimize_initial=True, overwrite_gens=True )
+cma_culling_mixed( exp, C, work_dir2, [template_dir1,template_dir2,template_dir3], 20, logging=2, molcas_threads=12, overwrite=True, max_generations= 100, generation_size=60, optimize_initial=True, overwrite_gens=True )
