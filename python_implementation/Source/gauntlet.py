@@ -154,6 +154,24 @@ class Gauntlet:
 
         return 1
 
+    def show_molecules_and_methods(self) -> None:
+        """
+        Prints all molecules and their associated methods that have been initialized.
+        """
+        if not self._initialized:
+            print("Gauntlet is not initialized yet.")
+            return
+
+        print("=== Molecules and Associated Methods ===")
+        for idx, mol in enumerate(self.molecules):
+            methods = list(self.methods_present[idx].keys())
+            print(f"Molecule: {mol}")
+            if methods:
+                for method in methods:
+                    print(f"  - Method: {method}")
+            else:
+                print("  (No methods found)")
+        print("=======================================")
 
 
     def run_gauntlet(self, exponents: Exponent_Set, mols: List[str], methods: List[str], name: Optional[str] = None) -> None:
@@ -171,7 +189,7 @@ class Gauntlet:
         with log_file.open("w") as log:
             log.write(f"Gauntlet run started at {datetime.now()}\n")
             log.write(f"Input files: {', '.join(str(f) for f in self.input_files)}\n")
-            log.write(f"Run script: {self.cfg.run_script}\n")
+            log.write(f"Run script: {self.cfg.execution_script}\n")
             log.write(f"Exponents: {exponents.__str__()}\n")
             log.write(f"Molecules: {', '.join(mols)}\n")
             log.write(f"Methods: {', '.join(methods)}\n")
@@ -184,20 +202,18 @@ class Gauntlet:
         for i in range(len(mols)):
             for j in range(len(methods)):
                 existence_matrix[i, j] = self.build_and_store_input(mols[i], methods[j], input_dir)
-                names_matrix[i, j]     = f"{mols[i]}_{methods[j]}"
+                names_matrix[i][j]     = f"{mols[i]}_{methods[j]}"
 
-        molcas_work_dir = new_gauntlet_dir / "molcas_work"
-        molcas_work_dir.mkdir(parents=True, exist_ok=False)
-
-        new_cfg                = copy(self.cfg)
+        molcas_work_dir        = new_gauntlet_dir / "molcas_work"
+        new_cfg                = copy.copy(self.cfg)
         new_cfg.group_dir_path = molcas_work_dir
         M                      = Job_Manager.from_config(new_cfg)
         for i in range(len(mols)):
             for j in range(len(methods)):
                 if existence_matrix[i, j]:
                     input_file = input_dir / f"{mols[i]}_{methods[j]}.input"
-                    M.add_job(exponents, input_file, names_matrix[i, j])
-        M.run_all_jobs()
+                    M.add_job(exponents, input_file, name=names_matrix[i][j])
+        # M.run_all_jobs()
 
 
         with log_file.open("a") as log:

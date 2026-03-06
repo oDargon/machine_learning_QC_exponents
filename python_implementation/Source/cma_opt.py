@@ -76,8 +76,8 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
                 f"T {hms(elapsed)}"
             )
 
-        if es.stop():
-            break
+        # if es.stop():
+        #     break
 
     return best_exp_overall, best_energy_overall, es
 
