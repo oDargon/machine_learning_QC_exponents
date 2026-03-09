@@ -3,7 +3,8 @@ from exponent_handler import *
 from molcas_handler import *
 from job_manager import *
 from objectives import *
-from numpy import argmin
+from numpy import argmax, argmin, array, diag
+from numpy.linalg import eigh
 
 
 
@@ -45,4 +46,26 @@ def local_exponent_removal_analysis(in_exp: Exponent_Set, in_energy: float64, ob
         print("-" * 40)
         print(f"l={l_best}  q={q_best}   ΔE = {deltas[best_idx]: .6e}")
 
-    return energies[best_idx], exponents[best_idx].copy_without_energy()
+    return energies[best_idx], exponents[best_idx].copy_without_energy(), best_idx
+
+
+
+def least_important_indices(cov: ndarray):
+
+    cov = array(cov)
+
+    # --- Method 1: diagonal variance ---
+    variances      = diag(cov)
+    variance_index = argmax(variances)
+
+    # --- Method 2: eigen decomposition ---
+    eigvals, eigvecs = eigh(cov)
+
+    idx_max          = argmax(eigvals)
+    largest_eigval   = eigvals[idx_max]
+    largest_eigvec   = eigvecs[:, idx_max]
+
+    # parameter most aligned with flattest direction
+    eigen_index = argmax(abs(largest_eigvec))
+
+    return

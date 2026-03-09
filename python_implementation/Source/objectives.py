@@ -50,7 +50,7 @@ class Ground_Energy_Objective(Objective):
         for i in range(len(exponents)):
             manager.add_job(exponents[i], self.template_file, name = names[i] if names is not None else None)
 
-        manager.run_all_jobs(threads, 0.5)
+        manager.run_all_jobs(threads)
 
         for job in manager.jobs:
             energies.append(job.exponent_set.energy or 1e6)
@@ -82,7 +82,7 @@ class Ground_Energy_Objective_GCA(Objective):
             manager.add_job(exponents[i], self.template_file_c, name = names[i] + "_cation" if names is not None else None)
             manager.add_job(exponents[i], self.template_file_a, name = names[i] + "_anion"  if names is not None else None)
 
-        manager.run_all_jobs(threads, 0.5)
+        manager.run_all_jobs(threads)
 
         for i in range(len(exponents)):
             E_g = manager.jobs[3*i].exponent_set.energy   or 1e6

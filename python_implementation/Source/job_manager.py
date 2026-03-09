@@ -40,12 +40,13 @@ class Job_Manager:
         execution_script: str | Path,
         group_dir_name: Optional[str] = None,   
         *,
-        group_dir_path: Optional[str | Path] = None,  # keyword-only full path override
-        auto_run: bool                       = False,
-        custom_executor: Optional[Callable]  = None,
-        full_logging: bool                   = False,
-        manager_logging: bool                = False,
-        overwrite_existing: bool             = False
+        group_dir_path: str | Path  = None,  # keyword-only full path override
+        auto_run: bool              = False,
+        custom_executor: Callable   = None,
+        full_logging: bool          = False,
+        manager_logging: bool       = False,
+        overwrite_existing: bool    = False,
+        custom_poll_interval: float = None
     ):
 
         self.execution_script = Path(execution_script).resolve()
@@ -53,15 +54,16 @@ class Job_Manager:
             raise FileNotFoundError(
                 f"Execution script not found: {self.execution_script}"
             )
-        self.base_dir                 = self.execution_script.parent
+        self.base_dir                    = self.execution_script.parent
 
-        self.auto_run: bool           = auto_run
-        self.jobs: List[Molcas_Job]   = []
-        self.job_counter: int         = 0
-        self.full_logging: bool       = full_logging
-        self.manager_logging: bool    = manager_logging
-        self.overwrite_existing: bool = overwrite_existing
-        self.all_jobs_ran: bool       = False
+        self.auto_run: bool              = auto_run
+        self.jobs: List[Molcas_Job]      = []
+        self.job_counter: int            = 0
+        self.full_logging: bool          = full_logging
+        self.manager_logging: bool       = manager_logging
+        self.overwrite_existing: bool    = overwrite_existing
+        self.global_poll_interval: float = custom_poll_interval if custom_poll_interval is not None else 5.0
+        self.all_jobs_ran: bool          = False
 
         # Set executor
         if custom_executor:
@@ -146,14 +148,16 @@ class Job_Manager:
         job.mark_submitted()
         return handle
     
-    def run_all_jobs(self, max_jobs: int = 1, poll_interval: float = 1.0):
+    def run_all_jobs(self, max_jobs: int = 1, *, poll_interval_override: float | None = None):
         """
         Run jobs managed by this Job_Manager.
 
         max_jobs: maximum number of jobs to run concurrently.
         poll_interval: seconds to wait between polling cycles.
         """
-        running_jobs = []
+
+        poll_interval = poll_interval_override if poll_interval_override is not None else self.global_poll_interval if self.global_poll_interval is not None else 5.0 
+        running_jobs  = []
 
         while True:
             # Check for jobs that can be submitted
@@ -306,33 +310,27 @@ class Job_Manager:
 
 
 
+def prepare_script(job: Molcas_Job, template: Path | str):
+    with open(template) as f:
+        content = f.read()
+
+    content = content.replace("{{JOB_NAME}}", str(job.input_file))
+
+    script = job.job_dir / "run.sh"
+    with open(script, "w") as f:
+        f.write(content)
+
+    script.chmod(0o755)
+
+    return script
 
 
-
-def local_bash_executor(job: Molcas_Job, script_template_path):
+def local_bash_executor(job: Molcas_Job, script_template_path: Path | str):
     """
     Submits a local bash job for the given Molcas_Job.
-    Returns a BashHandle.
+    Returns a Bash_Handle.
     """
-    template_path = Path(script_template_path)
-
-    # Read template
-    with open(template_path, "r") as f:
-        script_content = f.read()
-
-    # Replace placeholder with full input file path
-    script_content = script_content.replace(
-        "{{JOB_NAME}}",
-        str(job.input_file)
-    )
-
-    # Write job-specific script
-    script_path = job.job_dir / "run.sh"
-    with open(script_path, "w") as f:
-        f.write(script_content)
-
-    script_path.chmod(0o755)
-
+    script_path   = prepare_script(job, script_template_path)
     # Launch process
     output_handle = open(job.output_file, "w")
 
@@ -346,7 +344,25 @@ def local_bash_executor(job: Molcas_Job, script_template_path):
     return Bash_Handle(process, output_handle)
 
 def slurm_executor(job: Molcas_Job, script_template_path):
-    return None
+    """
+    Submits a local bash job for the given Molcas_Job.
+    Returns a Slurm_Handle.
+    """
+    script_path = prepare_script(job, script_template_path)
+
+    result = subprocess.run(
+        ["sbatch", "--parsable", script_path.name],
+        cwd=job.job_dir,
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+
+    job_id = result.stdout.strip()
+
+    return Slurm_Handle(job_id)
 
 
 

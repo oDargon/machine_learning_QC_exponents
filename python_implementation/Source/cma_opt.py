@@ -3,8 +3,10 @@ from exponent_handler import *
 from molcas_handler import *
 from job_manager import *
 from objectives import *
-from numpy import exp, log
+from numpy import exp, log, delete
 from opt_tools_new import *
+import shutil
+from datetime import datetime
 import copy
 import time
 import cma
@@ -19,7 +21,7 @@ def hms(seconds: float) -> str:
 
 
 def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, objective: Objective, work_dir: Path | str, generation_size: int = 30, sigma: float = 0.1, max_generations: int = 50, threads: int = 1,
-                              *, overwrite: bool = False, logging: bool = False) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
+                              *, overwrite: bool = False, cma_state: list | None = None, logging: bool = False) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
 
     work_dir = Path(work_dir).resolve()
     if work_dir.exists() and overwrite:
@@ -37,6 +39,16 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
     es = cma.CMAEvolutionStrategy(x0, sigma, {'popsize': generation_size})
     t0 = time.time()
 
+    if cma_state is not None:
+        es.mean  = cma_state[0]
+        es.sigma = cma_state[1]
+        es.sm.C  = cma_state[2] 
+        es.pc    = cma_state[3]
+
+        es.sm.update_now = True
+
+    log_file            = work_dir / "cma.log"
+    log_f               = open(log_file, "a")  # always log to file
     best_energy_overall = start_energy
     best_exp_overall    = start_exp.copy_without_energy()
 
@@ -63,21 +75,30 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
 
         es.tell(population, energies)
 
-        if logging:
-            elapsed = time.time() - t0
-            fevals  = es.countevals
-            delta_e = best_energy - start_energy
-            print(
-                f"[Gen {gen:3d}] | "
-                f"Fevals {fevals:6d} | "
-                f"BestE {best_energy:14.8f} | "
-                f"ΔE {delta_e: .8f} | "
-                f"σ {es.sigma: .3e} | "
-                f"T {hms(elapsed)}"
-            )
+        # logging
+        elapsed = time.time() - t0
+        fevals  = es.countevals
+        delta_e = best_energy - start_energy
+        line = (
+            f"[Gen {gen:3d}] | "
+            f"Fevals {fevals:6d} | "
+            f"BestE {best_energy:14.8f} | "
+            f"ΔE {delta_e: .8f} | "
+            f"σ {es.sigma: .3e} | "
+            f"T {hms(elapsed)}"
+        )
 
+        log_f.write(line + "\n")
+        log_f.flush()
+        if logging:
+            print(line)
+        
         # if es.stop():
         #     break
+
+    log_f.close()
+
+        
 
     return best_exp_overall, best_energy_overall, es
 
@@ -90,6 +111,7 @@ def cma_culling(
     exponents_to_cull: int = 1,
     *,
     optimize_initial: bool = False,
+    propagate_covariance   = False,
     generation_size: int   = 30,
     sigma: float           = 0.1,
     max_generations: int   = 50,
@@ -113,13 +135,16 @@ def cma_culling(
     opti_collection    = work_dir / "opti_collection"
     best_culled_dir    = work_dir / "best_culled"
     log_file           = work_dir / "culling.log"
+    run_logs_dir       = work_dir / "run_logs"
 
     culling_collection.mkdir(parents=True)
     opti_collection.mkdir(parents=True)
     best_culled_dir.mkdir(exist_ok=True)
+    run_logs_dir.mkdir(exist_ok=True)
 
     current_exp  = start_exp.copy_without_energy()
     last_energy  = start_energy
+    last_es      = None  # for covariance propagation if desired
 
     with open(log_file, "a") as log_f:
         log_f.write(
@@ -137,7 +162,7 @@ def cma_culling(
             if logging > 0:
                 print(line)
 
-            current_exp, last_energy, es = cma_fixed_exponent_count(
+            current_exp, last_energy, last_es = cma_fixed_exponent_count(
                 current_exp,
                 last_energy,
                 objective,
@@ -161,12 +186,16 @@ def cma_culling(
             if logging > 0:
                 print(line)
 
+            new_log_name = run_logs_dir / f"run_{0}_log.txt"
+            old_log_name = opt0_dir / "cma.log"
+            shutil.copy(old_log_name, new_log_name)
+
         # ---- iterative culling ----
         for i in range(exponents_to_cull):
 
             culling_dir = culling_collection / f"culling_{i}"
 
-            cull_energy, cull_exp = local_exponent_removal_analysis(
+            cull_energy, cull_exp, idx = local_exponent_removal_analysis(
                 current_exp,
                 last_energy,
                 objective,
@@ -176,28 +205,35 @@ def cma_culling(
             )
 
             # figure out what was removed (optional bookkeeping)
-            # assuming your removal function encodes this internally
             num_exponents = sum(len(shell) for shell in cull_exp.exponents)
 
             opt_dir = opti_collection / (
                 "opt_dir" if overwrite_gens else f"opt_dir_{i}"
             )
 
-            optimized_exp, optimized_energy, es = cma_fixed_exponent_count(
+
+            last_info = [
+                delete(last_es.mean, idx),
+                0.8*last_es.sigma,
+                delete(delete(last_es.cov, idx, axis=0), idx, axis=1),
+                delete(last_es.pc, idx)]
+
+            optimized_exp, optimized_energy, last_es = cma_fixed_exponent_count(
                 cull_exp,
                 cull_energy,
                 objective,
                 opt_dir,
-                generation_size=generation_size,
-                sigma=sigma,
-                max_generations=max_generations,
-                threads=threads,
-                overwrite=overwrite_gens,
-                logging=logging > 1,
+                generation_size = generation_size,
+                sigma           = sigma,
+                max_generations = max_generations,
+                threads         = threads,
+                overwrite       = overwrite_gens,
+                last            = last_info if propagate_covariance else None,
+                logging         = logging > 1,
             )
 
             optimized_exp.save(best_culled_dir, f"culled_{i+1:03d}.expo")
-
+            
             delta_cull   = cull_energy - last_energy
             delta_opt_in = optimized_energy - last_energy
             delta_total  = optimized_energy - start_energy
@@ -217,6 +253,10 @@ def cma_culling(
             log_f.flush()
             if logging > 0:
                 print(line)
+
+            new_log_name = run_logs_dir / f"run_{i+1}_log.txt"
+            old_log_name = opt_dir / "cma.log"
+            shutil.copy(old_log_name, new_log_name)
 
             current_exp = optimized_exp
             last_energy = optimized_energy
