@@ -1,0 +1,55 @@
+ &SEWARD  &END
+Expert
+Title
+ F atom
+* Finite Gaussian Nucleus
+Finite
+*----------------------------------------------------------------
+basis set
+F.....  / inline
+    9      3
+NUMS0
+EXPS0
+CONT0
+*  p-type ANO's (max 7 functions can be used)
+NUMS1
+EXPS1
+CONT1
+*  d-type ANO's (max 4 functions can be used)
+NUMS2
+EXPS2
+CONT2
+*  f-type ANO's, max 6 functions can be used
+NUMS3
+EXPS3
+CONT3
+F 0 0 0  
+end of basis
+Basis set
+Ca.ANO-XS-VDZ
+Ca1    -1.37900000  -1.37900000  -1.37900000 Angstrom
+Ca2    -1.37900000   1.37900000   1.37900000 Angstrom
+Ca3     1.37900000  -1.37900000   1.37900000 Angstrom
+Ca4     1.37900000   1.37900000  -1.37900000 Angstrom
+End of basis
+*----------------------------------------------------------------
+End of input
+
+ &GUESSORB &END
+sThr
+ 0.0d0
+tThr
+ 1.0d12
+End of Input
+
+ &RASSCF &END
+Title
+ F
+nActEl
+ 5 0 0
+Inactive
+ 42 
+Ras2    
+ 8
+ charge=7
+&CASPT2

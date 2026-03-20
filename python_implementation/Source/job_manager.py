@@ -31,6 +31,7 @@ class Job_Manager_Config:
     full_logging: bool                     = False
     manager_logging: bool                  = False
     overwrite_existing: bool               = False
+    custom_poll_interval: float             = None
 
 class Job_Manager:
 
@@ -290,15 +291,16 @@ class Job_Manager:
     @classmethod
     def from_config(cls, config: Job_Manager_Config) -> "Job_Manager":
         return cls(
-            executor_type      = config.executor_type,
-            execution_script   = config.execution_script,
-            group_dir_name     = config.group_dir_name,
-            group_dir_path     = config.group_dir_path,
-            auto_run           = config.auto_run,
-            custom_executor    = config.custom_executor,
-            full_logging       = config.full_logging,
-            manager_logging    = config.manager_logging,
-            overwrite_existing = config.overwrite_existing
+            executor_type        = config.executor_type,
+            execution_script     = config.execution_script,
+            group_dir_name       = config.group_dir_name,
+            group_dir_path       = config.group_dir_path,
+            auto_run             = config.auto_run,
+            custom_executor      = config.custom_executor,
+            full_logging         = config.full_logging,
+            manager_logging      = config.manager_logging,
+            overwrite_existing   = config.overwrite_existing,
+            custom_poll_interval = config.custom_poll_interval
         )
         
         

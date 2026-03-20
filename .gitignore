@@ -93,3 +93,5 @@ yarn-error.log*
 python_implementation/temp/*
 python_implementation/Results/*
 python_implementation/Work/*
+python_implementation/Source/F_ground_test_prop
+python_implementation/Source/FCa4_ground_test_prop

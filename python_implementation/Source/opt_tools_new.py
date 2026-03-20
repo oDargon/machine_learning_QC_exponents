@@ -46,7 +46,7 @@ def local_exponent_removal_analysis(in_exp: Exponent_Set, in_energy: float64, ob
         print("-" * 40)
         print(f"l={l_best}  q={q_best}   ΔE = {deltas[best_idx]: .6e}")
 
-    return energies[best_idx], exponents[best_idx].copy_without_energy(), best_idx
+    return energies[best_idx], exponents[best_idx].copy_without_energy(), best_idx, labels[best_idx]
 
 
 

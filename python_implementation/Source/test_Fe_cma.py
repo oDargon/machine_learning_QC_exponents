@@ -27,4 +27,4 @@ C = Job_Manager_Config(
 O              = Ground_Energy_Objective( template_dir_g, C)
 start_energy_g = -1271.90809463
 
-cma_fixed_exponent_count( exp, start_energy_g, O, work_dir, 24, 0.1, 200, 12, logging=True, overwrite=True )
+cma_fixed_exponent_count( exp, start_energy_g, O, work_dir, 36, 0.1, 300, 12, logging=True, overwrite=True )

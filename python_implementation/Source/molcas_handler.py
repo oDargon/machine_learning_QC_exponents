@@ -213,8 +213,27 @@ class Molcas_Job:
 
         return method_block
 
+    # def extract_energy_from_output(self):
+    #     energy = None
+
+    #     if not self.output_file.exists():
+    #         return None
+
+    #     with open(self.output_file) as f:
+    #         for line in f:
+    #             if "::" in line:
+    #                 parts = line.strip().split()
+    #                 for token in reversed(parts):
+    #                     try:
+    #                         energy = float(token)
+    #                         break   # stop scanning tokens in this line
+    #                     except ValueError:
+    #                         continue
+
+    #     return energy
+    
     def extract_energy_from_output(self):
-        energy = None
+        energies = []
 
         if not self.output_file.exists():
             return None
@@ -222,15 +241,20 @@ class Molcas_Job:
         with open(self.output_file) as f:
             for line in f:
                 if "::" in line:
-                    parts = line.strip().split()
-                    for token in reversed(parts):
-                        try:
-                            energy = float(token)
-                            break   # stop scanning tokens in this line
-                        except ValueError:
-                            continue
+                    if "CASPT2 Root" in line:
+                        parts = line.strip().split()
+                        for token in reversed(parts):
+                            try:
+                                energy = float(token)
+                                energies.append(energy)
+                                break
+                            except ValueError:
+                                continue
 
-        return energy
+        if not energies:
+            return None
+
+        return sum(energies) / len(energies)
 
     
 

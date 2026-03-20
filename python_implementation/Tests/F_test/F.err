@@ -1,0 +1,29 @@
+--- Start Module: auto at Tue Mar 17 13:40:55 2026 
+--- Start Module: seward at Tue Mar 17 13:40:55 2026 
+--- Stop Module:  seward at Tue Mar 17 13:40:55 2026 /rc=0 ---
+*** files:   F.guessorb.molden F.GssOrb xmldump
+    saved to directory /home/dzemail/Desktop/Code_Projects/PHD_work/ML_EXP/python_implementation/Tests/F_test
+
+*** Making symbolic link for INPORB -> /tmp/F.83932/F.GssOrb
+--- Start Module: guessorb at Tue Mar 17 13:40:55 2026 
+--- Stop Module:  guessorb at Tue Mar 17 13:40:55 2026 /rc=0 ---
+*** Making symbolic link for INPORB -> /tmp/F.83932/F.GssOrb
+--- Start Module: rasscf at Tue Mar 17 13:40:55 2026 
+--- Stop Module:  rasscf at Tue Mar 17 13:40:55 2026 /rc=0 ---
+*** files:   F.RasOrb F.RasOrb F.SpdOrb F.rasscf.molden F.rasscf.molden
+    saved to directory /home/dzemail/Desktop/Code_Projects/PHD_work/ML_EXP/python_implementation/Tests/F_test
+
+*** Making symbolic link for INPORB -> /tmp/F.83932/F.RasOrb
+--- Start Module: caspt2 at Tue Mar 17 13:40:56 2026 
+--- Stop Module:  caspt2 at Tue Mar 17 13:40:56 2026 /rc=0 ---
+*** files:   F.RasOrb F.RasOrb F.SpdOrb F.rasscf.molden F.rasscf.molden xmldump
+    saved to directory /home/dzemail/Desktop/Code_Projects/PHD_work/ML_EXP/python_implementation/Tests/F_test
+
+*** Making symbolic link for INPORB -> /tmp/F.83932/F.RasOrb
+--- Start Module: rasscf at Tue Mar 17 13:40:56 2026 
+--- Stop Module:  rasscf at Tue Mar 17 13:40:56 2026 /rc=0 ---
+*** Making symbolic link for INPORB -> /tmp/F.83932/F.RasOrb
+--- Start Module: caspt2 at Tue Mar 17 13:40:56 2026 
+--- Stop Module:  caspt2 at Tue Mar 17 13:40:56 2026 /rc=0 ---
+    Timing: Wall=2 User=0.73 System=0.63 
+--- Stop Module:  auto at Tue Mar 17 13:40:56 2026 /rc=0 ---

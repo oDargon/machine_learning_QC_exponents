@@ -45,7 +45,7 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
         es.sm.C  = cma_state[2] 
         es.pc    = cma_state[3]
 
-        es.sm.update_now = True
+        es.sm.update_now()
 
     log_file            = work_dir / "cma.log"
     log_f               = open(log_file, "a")  # always log to file
@@ -145,6 +145,7 @@ def cma_culling(
     current_exp  = start_exp.copy_without_energy()
     last_energy  = start_energy
     last_es      = None  # for covariance propagation if desired
+    t0           = time.time()
 
     with open(log_file, "a") as log_f:
         log_f.write(
@@ -167,19 +168,20 @@ def cma_culling(
                 last_energy,
                 objective,
                 opt0_dir,
-                generation_size=generation_size,
-                sigma=sigma,
-                max_generations=max_generations,
-                threads=threads,
-                overwrite=overwrite_gens,
-                logging=logging > 1,
+                generation_size =generation_size,
+                sigma           =sigma,
+                max_generations =max_generations,
+                threads         =threads,
+                overwrite       =overwrite_gens,
+                logging         =logging > 1,
             )
 
             current_exp.save(best_culled_dir, "culled_000_initial.expo")
 
             line = (
                 f"[Initial] After optimization: Energy = {last_energy:.6e} | "
-                f"ΔE vs original = {last_energy - start_energy:.6e}"
+                f"ΔE vs original = {last_energy - start_energy:.6e} | "
+                f"T {hms(time.time() - t0)}"
             )
             log_f.write(line + "\n")
             log_f.flush()
@@ -195,7 +197,7 @@ def cma_culling(
 
             culling_dir = culling_collection / f"culling_{i}"
 
-            cull_energy, cull_exp, idx = local_exponent_removal_analysis(
+            cull_energy, cull_exp, idx, label = local_exponent_removal_analysis(
                 current_exp,
                 last_energy,
                 objective,
@@ -214,8 +216,8 @@ def cma_culling(
 
             last_info = [
                 delete(last_es.mean, idx),
-                0.8*last_es.sigma,
-                delete(delete(last_es.cov, idx, axis=0), idx, axis=1),
+                10*last_es.sigma,
+                delete(delete(last_es.C, idx, axis=0), idx, axis=1),
                 delete(last_es.pc, idx)]
 
             optimized_exp, optimized_energy, last_es = cma_fixed_exponent_count(
@@ -228,25 +230,30 @@ def cma_culling(
                 max_generations = max_generations,
                 threads         = threads,
                 overwrite       = overwrite_gens,
-                last            = last_info if propagate_covariance else None,
+                cma_state       = last_info if propagate_covariance else None,
                 logging         = logging > 1,
             )
 
             optimized_exp.save(best_culled_dir, f"culled_{i+1:03d}.expo")
             
-            delta_cull   = cull_energy - last_energy
-            delta_opt_in = optimized_energy - last_energy
-            delta_total  = optimized_energy - start_energy
+            delta_cull       = cull_energy - last_energy
+            delta_opt_in     = optimized_energy - last_energy
+            delta_total      = optimized_energy - start_energy
+            energy_recovered = optimized_energy - cull_energy
+            l_curr, q_curr   = label
 
             line = (
                 f"[Culling {i+1:>2}/{exponents_to_cull:<2}] "
+                f"(l={l_curr}, q={q_curr}) | "
                 f"E_in = {last_energy:12.6f} | "
                 f"E_cull = {cull_energy:12.6f} | "
                 f"E_opt = {optimized_energy:12.6f} | "
                 f"ΔE_cull = {delta_cull:+12.6f} | "
                 f"ΔE_opt_in = {delta_opt_in:+12.6f} | "
+                f"E_recov = {energy_recovered:+12.6f} | "
                 f"ΔE_total = {delta_total:+12.6f} | "
-                f"N = {num_exponents:3d}"
+                f"N = {num_exponents:3d} | "
+                f"T {hms(time.time() - t0)}"
             )
 
             log_f.write(line + "\n")
