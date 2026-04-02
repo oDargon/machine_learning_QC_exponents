@@ -2,8 +2,10 @@ from pathlib import Path
 from enum import Enum
 import re
 import shutil
-from exponent_handler import *
-from handles import *
+from .exponent_handler import Exponent_Set
+from .parsing import make_input_from_template
+import subprocess
+
 
 class Job_Status(Enum):
     CREATED   = "created"
@@ -20,6 +22,7 @@ class Molcas_Job:
         job_id: int,
         job_dir: Path,
         template_path: Path,
+        extract_path: Path,
         exponent_set: Exponent_Set,
         overwrite: bool = False,
         *,
@@ -29,14 +32,14 @@ class Molcas_Job:
         
     ):
         
-        self.job_id        = job_id
-        self.job_dir       = Path(job_dir)
-        self.template_path = Path(template_path)
-        self.exponent_set  = exponent_set
-        self.input_name    = input_name if input_name is not None else "input"
-        self.logging       = logging
-        self.expo_name     = name if name is not None else "None"
-        self.handle        = None #Handle used by the manager to asses job completion
+        self.job_id         = job_id
+        self.job_dir        = Path(job_dir)
+        self.template_path  = Path(template_path)
+        self.extract_path   = Path(extract_path)
+        self.input_name     = input_name if input_name is not None else "input"
+        self.logging        = logging
+        self.expo_name      = name if name is not None else "None"
+        self.handle         = None #Handle used by the manager to asses job completion
 
         # Freeze exponent_set inside job
         self.exponent_set = exponent_set.copy_without_energy()
@@ -48,8 +51,9 @@ class Molcas_Job:
         self.results         = None
 
         # Derived paths
-        self.input_file  = self.job_dir / (self.input_name +".input")
-        self.output_file = self.job_dir / (self.input_name+".log")
+        self.input_file   = self.job_dir / (self.input_name +".input")
+        self.output_file  = self.job_dir / (self.input_name+".log")
+        self.extract_file = self.job_dir / ("extractor.sh")
 
     
     def prepare_job(self):
@@ -79,54 +83,20 @@ class Molcas_Job:
             raise FileNotFoundError(f"Template file {self.template_path} does not exist")
 
 
-        self.method = self.extract_method_from_template()
+        self.method              = self.extract_method_from_template()
         self.exponent_set.method = self.method
 
-        self.make_input_from_template()
+        make_input_from_template(self.input_file, self.template_path, self.exponent_set, job_id=self.job_id)
+        self.make_extractor()
         self.status = Job_Status.PREPARED
         # self.exponent_set.save(self.job_dir)
 
+    def make_extractor(self):
+        if not self.extract_path.exists():
+            raise FileNotFoundError(f"Extractor file {self.extract_path} does not exist")
 
-    def replacer(self, match):
-        kind, num_str = match.groups()
-        index = int(num_str)
-
-        try:
-            if kind == "NUMS":
-                return "    " + str(self.exponent_set.lengths[index]) + " " + str(self.exponent_set.n_contracted[index])
-            elif kind == "EXPS":
-                values = self.exponent_set.exponents[index]
-                return " ".join(f"{v:.10f}" for v in values)
-            elif kind == "CONT":
-                matrix = self.exponent_set.contractions[index]
-                return "\n".join(
-                    " ".join(f"{value:.10f}" for value in row)
-                    for row in matrix
-                )
-        except IndexError:
-            raise IndexError(f"Placeholder {kind}{num_str} exceeds Exponent_Set size {len(self.exponent_set.exponents)}")
-
-
-    def make_input_from_template(self):
-
-        if self.logging:
-            print(f"[MolcasJob] Writing input to {self.input_file}")
-
-        with open(self.template_path) as f:
-            text = f.read()
-
-        pattern  = re.compile(r"(NUMS|EXPS|CONT)(\d+)")
-        new_text = pattern.sub(self.replacer, text)
-
-        # ---- VALIDATION ----
-        if pattern.search(new_text):
-            raise ValueError(
-                f"Unresolved placeholders remain in template for job {self.job_id}"
-            )
-
-        with open(self.input_file, "w") as f:
-            f.write(new_text)
-
+        shutil.copy(self.extract_path, self.extract_file)
+        self.extract_file.chmod(0o755)
 
     def update_from_output(self):
         if self.status != Job_Status.SUBMITTED:
@@ -172,7 +142,6 @@ class Molcas_Job:
                 self.exponent_set.save(self.job_dir)
             else:
                 self.exponent_set.save(self.job_dir, self.expo_name)
-
 
     def extract_method_from_template(self):
         """
@@ -232,31 +201,62 @@ class Molcas_Job:
 
     #     return energy
     
-    def extract_energy_from_output(self):
-        energies = []
+    # def extract_energy_from_output(self):
+    #     energies = []
 
+    #     if not self.output_file.exists():
+    #         return None
+
+    #     with open(self.output_file) as f:
+    #         for line in f:
+    #             if "::" in line:
+    #                 if "CASPT2 Root" in line:
+    #                     parts = line.strip().split()
+    #                     for token in reversed(parts):
+    #                         try:
+    #                             energy = float(token)
+    #                             energies.append(energy)
+    #                             break
+    #                         except ValueError:
+    #                             continue
+
+    #     if not energies:
+    #         return None
+
+    #     return sum(energies) / len(energies)
+
+    
+    def extract_energy_from_output(self):
         if not self.output_file.exists():
             return None
 
-        with open(self.output_file) as f:
-            for line in f:
-                if "::" in line:
-                    if "CASPT2 Root" in line:
-                        parts = line.strip().split()
-                        for token in reversed(parts):
-                            try:
-                                energy = float(token)
-                                energies.append(energy)
-                                break
-                            except ValueError:
-                                continue
-
-        if not energies:
+        if not self.extract_file.exists():
             return None
 
-        return sum(energies) / len(energies)
+        try:
+            result = subprocess.run(
+                [str(self.extract_file), str(self.output_file)],
+                cwd=self.job_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            if self.logging:
+                print(f"[MolcasJob] Extractor failed for job '{self.job_id}': {e.stderr.strip()}")
+            return None
 
-    
+        output = result.stdout.strip()
+
+        if not output:
+            return None
+
+        try:
+            return float(output)
+        except ValueError:
+            if self.logging:
+                print(f"[MolcasJob] Invalid extractor output for job '{self.job_id}': {output}")
+            return None
 
     def mark_submitted(self):
 

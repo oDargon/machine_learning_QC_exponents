@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evo_opt"
+version = "0.1.0"
+description = "My evo optimization tools"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["evo_opt"]
+
+[project.scripts]
+exptoinp   = "evo_opt.exp_to_inp_tool:main"
+expcomp    = "evo_opt.exp_compare_tool:main"
+exptoexpo  = "evo_opt.exp_to_expo_tool:main"

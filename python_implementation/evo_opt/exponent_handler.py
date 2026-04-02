@@ -228,9 +228,9 @@ class Exponent_Set:
             raise FileExistsError(f"File already exists: {path}")
 
         # ---------- defaults ----------
-        atom = self.atom_name or "X"
-        method = self.method or "Unknown"
-        energy = "NONE" if self.energy is None else f"{self.energy:.16e}"
+        atom       = self.atom_name or "X"
+        method     = self.method or "Unknown"
+        energy     = "NONE" if self.energy is None else f"{self.energy:.16e}"
         contracted = self.contracted
 
         # ---------- write ----------
@@ -240,8 +240,8 @@ class Exponent_Set:
             f.write(f"ENERGY: {energy}\n")
             f.write(f"CONTRACTED: {'TRUE' if contracted else 'FALSE'}\n")
 
-            # method (optional)
-            if method != "Unknown":
+            # method
+            if self.method != "Unknown":
                 f.write("<METHOD>\n")
                 f.write(method.rstrip() + "\n")
                 f.write("</METHOD>\n")
@@ -437,6 +437,9 @@ class Exponent_Set:
         if contracted is None:
             contracted = found_contraction
 
+        if not found_method:
+            method = "Unknown"
+
         # ---------------- construct ----------------
         return cls(
             label=None,
@@ -449,29 +452,29 @@ class Exponent_Set:
         )
 
     @classmethod
-    def from_file(cls, path: str) -> "Exponent_Set":
-        return cls.load(path)
+    def from_file(cls, path: str | Path) -> "Exponent_Set":
+        return cls.load(Path(path))
 
 
 #TO DO: FIX THE LACKING CHECK FOR ORDER/REMOVE UNNECESSARY METHODS
     def remove_exponent_uncontracted(self, l: int, q: int) -> None:
+        if self.contracted:
+            raise ValueError(
+                "Exponent set is contracted; cannot remove exponent without updating "
+                "contraction matrix. Use remove_exponent_contracted() instead."
+            )
+
         if l < 0 or l >= len(self.exponents):
             raise IndexError(f"Invalid shell index l={l}")
         if q < 0 or q >= self.lengths[l]:
             raise IndexError(f"Invalid exponent index q={q} for shell l={l}")
-        
-        # Update lengths
-        self.lengths[l]  -= 1
-        self.exponents[l] = delete(self.exponents[l], q)
 
-        if self.contracted:
-            raise ValueError("Exponent set is contracted; cannot remove exponent without updating contraction matrix. Use remove_exponent_contracted() instead.")
-        
-        else:
-            # If not contracted, we need to maintain the invariant that the contraction matrix is identity
-            n = self.lengths[l]
-            self.n_contracted[l] = n
-            self.contractions[l] = eye(n, dtype=float64)
+        self.exponents[l] = delete(self.exponents[l], q)
+        self.lengths[l]  -= 1
+
+        n = self.lengths[l]
+        self.n_contracted[l] = n
+        self.contractions[l] = eye(n, dtype=float64)
 
     def add_exponent_uncontracted(self, l: int, value: float) -> None:
         if l < 0 or l >= len(self.exponents):
@@ -516,6 +519,10 @@ class Exponent_Set:
             idx += n
 
     def flatten_exps(self) -> ndarray:
-        return hstack(self.exponents)
+        nonempty = [exp for exp in self.exponents if len(exp) > 0]
+        if not nonempty:
+            return array([], dtype=float64)
+        return hstack(nonempty)
 
-        
+    def same_shape_as(self, other_set: "Exponent_Set") -> bool:
+        return self.lengths == other_set.lengths and self.n_contracted == other_set.n_contracted and self.contracted == other_set.contracted

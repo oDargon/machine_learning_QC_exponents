@@ -4,12 +4,10 @@ from enum import Enum
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
-from molcas_handler import *
-from handles import *
+from .molcas_handler import Molcas_Job, Job_Status
+from .handles import Handle, Bash_Handle, Slurm_Handle
 import time
 import shutil
-
-
 
 
 
@@ -24,6 +22,7 @@ class Executor_Type(Enum):
 class Job_Manager_Config:
     executor_type: Optional[Executor_Type] = None
     execution_script: Optional[Path]       = None
+    extraction_script: Optional[Path]      = None
     group_dir_name: Optional[str]          = None
     group_dir_path: Optional[Path]         = None
     auto_run: bool                         = False
@@ -31,7 +30,7 @@ class Job_Manager_Config:
     full_logging: bool                     = False
     manager_logging: bool                  = False
     overwrite_existing: bool               = False
-    custom_poll_interval: float             = None
+    custom_poll_interval: float            = None
 
 class Job_Manager:
 
@@ -39,6 +38,7 @@ class Job_Manager:
         self,
         executor_type: Executor_Type,
         execution_script: str | Path,
+        extraction_script: str | Path,
         group_dir_name: Optional[str] = None,   
         *,
         group_dir_path: str | Path  = None,  # keyword-only full path override
@@ -54,6 +54,12 @@ class Job_Manager:
         if not self.execution_script.exists():
             raise FileNotFoundError(
                 f"Execution script not found: {self.execution_script}"
+            )
+        
+        self.extraction_script = Path(extraction_script).resolve()
+        if not self.extraction_script.exists():
+            raise FileNotFoundError(
+                f"Extraction script not found: {self.extraction_script}"
             )
         self.base_dir                    = self.execution_script.parent
 
@@ -126,6 +132,7 @@ class Job_Manager:
             job_id        = self.job_counter,
             job_dir       = job_dir,
             template_path = template_path,
+            extract_path  = self.extraction_script,
             exponent_set  = exponent_set,
             name          = name,
             logging       = log_flag   
@@ -293,6 +300,7 @@ class Job_Manager:
         return cls(
             executor_type        = config.executor_type,
             execution_script     = config.execution_script,
+            extraction_script    = config.extraction_script,
             group_dir_name       = config.group_dir_name,
             group_dir_path       = config.group_dir_path,
             auto_run             = config.auto_run,
