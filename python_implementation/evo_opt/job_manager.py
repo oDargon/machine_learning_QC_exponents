@@ -5,18 +5,22 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from .molcas_handler import Molcas_Job, Job_Status
-from .handles import Handle, Bash_Handle, Slurm_Handle
+from .handles import Handle, Bash_Handle, Slurm_Handle, Remote_Slurm_Handle
 import time
 import shutil
-
+import shlex
 
 
 
 
 class Executor_Type(Enum):
-    LOCAL_BASH = "local_bash"
-    SLURM      = "slurm"
+    LOCAL_BASH  = "local_bash"
+    LOCAL_SLURM = "local_slurm"
 
+class Remote_Pullback_Policy(Enum):
+    MINIMAL  = "minimal"   # e.g. only energy from log file at remote
+    STANDARD = "standard"  # log file and optionaly RASORB file
+    FULL     = "full"      # everything in remote job dir
 
 @dataclass
 class Job_Manager_Config:
@@ -31,6 +35,14 @@ class Job_Manager_Config:
     manager_logging: bool                  = False
     overwrite_existing: bool               = False
     custom_poll_interval: float            = None
+
+    # SSH / remote execution options
+    over_ssh: bool                         = False
+    ssh_target: Optional[str]              = None
+    remote_work_root: Optional[Path]       = None
+    remote_pullback_policy: Remote_Pullback_Policy = Remote_Pullback_Policy.STANDARD
+    pull_rasorb: bool                      = False
+    cleanup_remote: bool                   = True 
 
 class Job_Manager:
 
@@ -47,7 +59,15 @@ class Job_Manager:
         full_logging: bool          = False,
         manager_logging: bool       = False,
         overwrite_existing: bool    = False,
-        custom_poll_interval: float = None
+        custom_poll_interval: float = None,
+
+        # SSH / remote execution options
+        over_ssh: bool                         = False,
+        ssh_target: Optional[str]              = None,
+        remote_work_root: Optional[str | Path] = None,
+        remote_pullback_policy: Remote_Pullback_Policy = Remote_Pullback_Policy.STANDARD,
+        pull_rasorb: bool                      = False,
+        cleanup_remote: bool                   = True,
     ):
 
         self.execution_script = Path(execution_script).resolve()
@@ -71,6 +91,15 @@ class Job_Manager:
         self.overwrite_existing: bool    = overwrite_existing
         self.global_poll_interval: float = custom_poll_interval if custom_poll_interval is not None else 5.0
         self.all_jobs_ran: bool          = False
+
+        self.over_ssh               = over_ssh
+        self.ssh_target             = ssh_target
+        self.remote_work_root       = Path(remote_work_root) if remote_work_root is not None else None
+        self.remote_pullback_policy = remote_pullback_policy
+        self.pull_rasorb            = pull_rasorb
+        self.cleanup_remote         = cleanup_remote
+
+        self._validate_remote_settings()
 
         # Set executor
         if custom_executor:
@@ -107,12 +136,21 @@ class Job_Manager:
         base_name = group_dir_name or datetime.now().strftime("%Y%m%d_%H%M%S")
         return (self.base_dir / base_name).resolve()
     
-    def get_builtin_executor(self, type: Executor_Type ):
+    def get_builtin_executor(self, executor_type: Executor_Type ):
         try:
-            return executor_map[type]
+            return executor_map[executor_type]
         except KeyError:
-            raise ValueError(f"Unsupported executor type: {type}")
+            raise ValueError(f"Unsupported executor type: {executor_type}")
 
+    def _validate_remote_settings(self):
+        if not self.over_ssh:
+            return
+
+        if not self.ssh_target:
+            raise ValueError("When over_ssh=True, ssh_target must be provided.")
+
+        if self.remote_work_root is None:
+            raise ValueError("When over_ssh=True, remote_work_root must be provided.")
 
     def add_job(self, exponent_set, template_path, *, name: Optional[str] = None, this_log: bool = False):
 
@@ -145,7 +183,16 @@ class Job_Manager:
         return job
     
     def run_job(self, job: Molcas_Job):
-        handle = self.executor(job, self.execution_script)
+        handle = self.executor(
+            job,
+            self.execution_script,
+            over_ssh               = self.over_ssh,
+            ssh_target             = self.ssh_target,
+            remote_work_root       = self.remote_work_root,
+            remote_pullback_policy = self.remote_pullback_policy,
+            pull_rasorb            = self.pull_rasorb,
+            cleanup_remote         = self.cleanup_remote,
+        )
 
         if not isinstance(handle, Handle):
             raise RuntimeError(
@@ -277,15 +324,24 @@ class Job_Manager:
 
         # Create new Job_Manager instance
         copy_manager = Job_Manager(
-            executor_type      =None,  # We'll override executor manually
-            execution_script   =self.execution_script,
-            group_dir_name     =group_dir_name_to_use,
-            group_dir_path     =None,
-            auto_run           =self.auto_run,
-            custom_executor    =self.executor,
-            full_logging       =self.full_logging,
-            manager_logging    =self.manager_logging,
-            overwrite_existing =overwrite_existing
+            executor_type        =None,  # We'll override executor manually
+            execution_script     = self.execution_script,
+            extraction_script    = self.extraction_script,
+            group_dir_name       = group_dir_name_to_use,
+            group_dir_path       = None,
+            auto_run             = self.auto_run,
+            custom_executor      = self.executor,
+            full_logging         = self.full_logging,
+            manager_logging      = self.manager_logging,
+            overwrite_existing   = overwrite_existing,
+            custom_poll_interval = self.global_poll_interval,
+
+            over_ssh                = self.over_ssh,
+            ssh_target              = self.ssh_target,
+            remote_work_root        = self.remote_work_root,
+            remote_pullback_policy  = self.remote_pullback_policy,
+            pull_rasorb             = self.pull_rasorb,
+            cleanup_remote          = self.cleanup_remote,
         )
 
         # Clear jobs and reset counter
@@ -308,7 +364,14 @@ class Job_Manager:
             full_logging         = config.full_logging,
             manager_logging      = config.manager_logging,
             overwrite_existing   = config.overwrite_existing,
-            custom_poll_interval = config.custom_poll_interval
+            custom_poll_interval = config.custom_poll_interval,
+
+            over_ssh                = config.over_ssh,
+            ssh_target              = config.ssh_target,
+            remote_work_root        = config.remote_work_root,
+            remote_pullback_policy  = config.remote_pullback_policy,
+            pull_rasorb             = config.pull_rasorb,
+            cleanup_remote          = config.cleanup_remote,
         )
         
         
@@ -335,7 +398,7 @@ def prepare_script(job: Molcas_Job, template: Path | str):
     return script
 
 
-def local_bash_executor(job: Molcas_Job, script_template_path: Path | str):
+def local_bash_executor(job: Molcas_Job, script_template_path: Path | str, **kwargs):
     """
     Submits a local bash job for the given Molcas_Job.
     Returns a Bash_Handle.
@@ -353,7 +416,7 @@ def local_bash_executor(job: Molcas_Job, script_template_path: Path | str):
 
     return Bash_Handle(process, output_handle)
 
-def slurm_executor(job: Molcas_Job, script_template_path):
+def slurm_executor(job: Molcas_Job, script_template_path, **kwargs):
     """
     Submits a local bash job for the given Molcas_Job.
     Returns a Slurm_Handle.
@@ -374,9 +437,93 @@ def slurm_executor(job: Molcas_Job, script_template_path):
 
     return Slurm_Handle(job_id)
 
+def remote_slurm_executor(
+    job: Molcas_Job,
+    script_template_path: Path | str,
+    *,
+    ssh_target: str,
+    remote_work_root: str | Path,
+    remote_pullback_policy,
+    pull_rasorb: bool,
+    cleanup_remote: bool,
+    **kwargs,
+):
+    script_path = prepare_script(job, script_template_path)
+
+    remote_job_dir = Path(remote_work_root) / job.job_dir.name
+
+    result = subprocess.run(
+        ["ssh", ssh_target, f"mkdir -p {shlex.quote(str(remote_job_dir))}"],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to create remote job directory '{remote_job_dir}': {result.stderr}"
+        )
+
+    for path in job.job_dir.iterdir():
+        if not path.is_file():
+            continue
+
+        result = subprocess.run(
+            ["scp", str(path), f"{ssh_target}:{str(remote_job_dir)}/"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to upload '{path.name}' to '{remote_job_dir}': {result.stderr}"
+            )
+
+    result = subprocess.run(
+        [
+            "ssh",
+            ssh_target,
+            (
+                f"cd {shlex.quote(str(remote_job_dir))} && "
+                f"sbatch --parsable {shlex.quote(script_path.name)}"
+            )
+        ],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Remote sbatch failed in '{remote_job_dir}': {result.stderr}"
+        )
+
+    job_id = result.stdout.strip()
+    if not job_id:
+        raise RuntimeError(
+            f"Remote sbatch returned no job id for local job '{job.job_id}'."
+        )
+
+    return Remote_Slurm_Handle(
+        job_id=job_id,
+        output_name=job.output_file.name,
+        ssh_target=ssh_target,
+        remote_job_dir=remote_job_dir,
+        local_job_dir=job.job_dir,
+        pullback_policy=remote_pullback_policy,
+        pull_rasorb=pull_rasorb,
+        cleanup_remote=cleanup_remote,
+    )
 
 
 executor_map = {
     Executor_Type.LOCAL_BASH: local_bash_executor,
-    Executor_Type.SLURM:      slurm_executor,
+    Executor_Type.LOCAL_SLURM:     slurm_executor,
 }
+
+def parse_executor_type(value: str) -> Executor_Type:
+    normalized = value.strip().lower()
+
+    for member in Executor_Type:
+        if member.value == normalized:
+            return member
+
+    allowed = ", ".join(m.value for m in Executor_Type)
+    raise ValueError(
+        f"Unknown executor_type '{value}'. Allowed values: {allowed}"
+    )
