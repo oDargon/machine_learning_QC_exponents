@@ -9,6 +9,7 @@ from datetime import datetime
 import time
 import cma
 import csv
+import inspect
 
 def hms(seconds: float) -> str:
     seconds = int(seconds)
@@ -61,6 +62,21 @@ def evaluate_initial_energy(
 
 def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, objective: Objective, work_dir: Path | str, generation_size: int = 30, sigma: float = 0.1, max_generations: int = 50, threads: int = 1,
                               *, overwrite: bool = False, cma_state: list | None = None, logging: bool = False, use_stopping: bool = False) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
+
+    # sig = inspect.signature(cma_fixed_exponent_count)
+    # bound = sig.bind(start_exp, start_energy, objective, work_dir,
+    #                 generation_size, sigma, max_generations, threads,
+    #                 overwrite=overwrite, cma_state=cma_state,
+    #                 logging=logging, use_stopping=use_stopping)
+    # bound.apply_defaults()
+
+    # print(
+    #     f"cma_fixed_exponent_count("
+    #     + ", ".join(f"{k}={v!r}" for k, v in bound.arguments.items())
+    #     + ")"
+    # )
+
+
 
     work_dir = Path(work_dir).resolve()
     if work_dir.exists() and overwrite:
@@ -220,12 +236,12 @@ def cma_culling(
     start_exp: Exponent_Set,
     objective: Objective,
     work_dir: Path | str,
-    exponents_to_cull: int = 1,
     *,
+    exponents_to_cull: int       = 1,
     optimize_initial: bool       = False,
     propagate_covariance: bool   = False,
     propagation_mode: int        = 1,
-    generation_size: int         = 30,
+    generation_size: int         = 12,
     sigma: float                 = 0.1,
     max_generations: int         = 50,
     threads: int                 = 1,

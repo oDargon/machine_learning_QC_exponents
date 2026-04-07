@@ -4,7 +4,7 @@ import inspect
 import yaml
 
 from .exponent_handler import Exponent_Set
-from .job_manager import Job_Manager_Config, Executor_Type, parse_executor_type
+from .job_manager import Job_Manager_Config, parse_executor_type
 from .cma_opt import cma_culling
 from .objectives import Ground_Energy_Objective
 
@@ -15,7 +15,7 @@ SUPPLIED = {"start_exp", "objective", "work_dir"}
 def parse_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("expo", type=Path)
+    parser.add_argument("exp_path", type=Path)
     parser.add_argument("template", type=Path)
     parser.add_argument("run_script", type=Path)
     parser.add_argument("extract_script", type=Path)
@@ -24,9 +24,9 @@ def parse_args():
     parser.add_argument("executor_type", type=str)
 
     parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--poll-time", type=float, default=5.0)
 
     return parser.parse_args()
-
 
 def load_yaml(path: Path) -> dict:
     with open(path, "r") as f:
@@ -42,7 +42,7 @@ def load_yaml(path: Path) -> dict:
 
 
 def validate_params(params: dict):
-    sig = inspect.signature(cma_culling)
+    sig     = inspect.signature(cma_culling)
     allowed = set(sig.parameters.keys()) - SUPPLIED
 
     missing = [
@@ -85,13 +85,13 @@ def main(
     config_path: Path,
     executor_type: str,
     run_name: str | None = None,
+    poll_time: float     = 5.0,
 ) -> int:
 
     params = load_yaml(config_path)
     validate_params(params)
 
     run_dir = resolve_run_dir(work_dir_path, run_name)
-    run_dir.mkdir(parents=True, exist_ok=True)
 
     executor = parse_executor_type(executor_type)
 
@@ -99,13 +99,14 @@ def main(
         executor,
         run_script_path,
         extract_script_path,
-        manager_logging=False,
-        overwrite_existing=False,
+        manager_logging      = False,
+        overwrite_existing   = False,
+        custom_poll_interval = poll_time,
     )
 
     exp = Exponent_Set.from_file(exp_path)
     obj = Ground_Energy_Objective(template_path, C)
-
+    
     cma_culling(exp, obj, run_dir, **params)
 
     return 0
@@ -115,13 +116,14 @@ if __name__ == "__main__":
     args = parse_args()
     raise SystemExit(
         main(
-            exp_path=args.expo,
-            template_path=args.template,
-            run_script_path=args.run_script,
-            extract_script_path=args.extract_script,
-            work_dir_path=args.work_dir,
-            config_path=args.config,
-            executor_type=args.executor_type,
-            run_name=args.run_name,
+            exp_path            = args.exp_path,
+            template_path       = args.template,
+            run_script_path     = args.run_script,
+            extract_script_path = args.extract_script,
+            work_dir_path       = args.work_dir,
+            config_path         = args.config,
+            executor_type       = args.executor_type,
+            run_name            = args.run_name,
+            poll_time           = args.poll_time,
         )
     )
