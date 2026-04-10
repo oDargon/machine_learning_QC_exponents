@@ -1,21 +1,15 @@
 from pathlib import Path
-from typing import Optional, Callable, List
+from typing import Optional, List
 from enum import Enum
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from .molcas_handler import Molcas_Job, Job_Status
-from .handles import Handle, Bash_Handle, Slurm_Handle, Remote_Slurm_Handle
+from .handles import Handle
+from .executors import Executor_Type, BATCHED_EXECUTORS, REMOTE_EXECUTORS, executor_map
 import time
 import shutil
-import shlex
 
 
-
-
-class Executor_Type(Enum):
-    LOCAL_BASH  = "local_bash"
-    LOCAL_SLURM = "local_slurm"
 
 class Remote_Pullback_Policy(Enum):
     MINIMAL  = "minimal"   # e.g. only energy from log file at remote
@@ -30,7 +24,6 @@ class Job_Manager_Config:
     group_dir_name: Optional[str]          = None
     group_dir_path: Optional[Path]         = None
     auto_run: bool                         = False
-    custom_executor: Optional[Callable]    = None
     full_logging: bool                     = False
     manager_logging: bool                  = False
     overwrite_existing: bool               = False
@@ -55,7 +48,6 @@ class Job_Manager:
         *,
         group_dir_path: str | Path  = None,  # keyword-only full path override
         auto_run: bool              = False,
-        custom_executor: Callable   = None,
         full_logging: bool          = False,
         manager_logging: bool       = False,
         overwrite_existing: bool    = False,
@@ -81,16 +73,18 @@ class Job_Manager:
             raise FileNotFoundError(
                 f"Extraction script not found: {self.extraction_script}"
             )
-        self.base_dir                    = self.execution_script.parent
+        self.base_dir                     = self.execution_script.parent
 
-        self.auto_run: bool              = auto_run
-        self.jobs: List[Molcas_Job]      = []
-        self.job_counter: int            = 0
-        self.full_logging: bool          = full_logging
-        self.manager_logging: bool       = manager_logging
-        self.overwrite_existing: bool    = overwrite_existing
-        self.global_poll_interval: float = custom_poll_interval if custom_poll_interval is not None else 5.0
-        self.all_jobs_ran: bool          = False
+        self.auto_run: bool               = auto_run
+        self.jobs: List[Molcas_Job]       = []
+        self.job_counter: int             = 0
+        self.full_logging: bool           = full_logging
+        self.manager_logging: bool        = manager_logging
+        self.overwrite_existing: bool     = overwrite_existing
+        self.executor_type: Executor_Type = executor_type
+        self.batched_execution: bool      = executor_type in BATCHED_EXECUTORS
+        self.global_poll_interval: float  = custom_poll_interval if custom_poll_interval is not None else 5.0
+        self.all_jobs_ran: bool           = False
 
         self.over_ssh               = over_ssh
         self.ssh_target             = ssh_target
@@ -102,11 +96,7 @@ class Job_Manager:
         self._validate_remote_settings()
 
         # Set executor
-        if custom_executor:
-            self.executor = custom_executor
-        else:
-            self.executor = self.get_builtin_executor(executor_type)
-
+        self.executor = self.get_builtin_executor(executor_type)
         self.group_dir = self._resolve_group_dir(group_dir_name, group_dir_path)
 
         if self.group_dir.exists():
@@ -143,6 +133,9 @@ class Job_Manager:
             raise ValueError(f"Unsupported executor type: {executor_type}")
 
     def _validate_remote_settings(self):
+        if self.executor_type not in REMOTE_EXECUTORS:
+            return
+
         if not self.over_ssh:
             return
 
@@ -182,7 +175,7 @@ class Job_Manager:
 
         return job
     
-    def run_job(self, job: Molcas_Job):
+    def submit_single(self, job: Molcas_Job):
         handle = self.executor(
             job,
             self.execution_script,
@@ -203,31 +196,55 @@ class Job_Manager:
         job.mark_submitted()
         return handle
     
-    def run_all_jobs(self, max_jobs: int = 1, *, poll_interval_override: float | None = None):
-        """
-        Run jobs managed by this Job_Manager.
+    def submit_batch(self, jobs: List[Molcas_Job]):
+        handle = self.executor(
+            jobs,
+            self.execution_script,
+            over_ssh               = self.over_ssh,
+            ssh_target             = self.ssh_target,
+            remote_work_root       = self.remote_work_root,
+            remote_pullback_policy = self.remote_pullback_policy,
+            pull_rasorb            = self.pull_rasorb,
+            cleanup_remote         = self.cleanup_remote,
+        )
 
-        max_jobs: maximum number of jobs to run concurrently.
-        poll_interval: seconds to wait between polling cycles.
-        """
+        if not isinstance(handle, Handle):
+            raise RuntimeError(
+                f"Executor did not return a valid Handle for batch job"
+            )
+        
+        for job in jobs:
+            job.mark_submitted()
 
+        return handle
+
+    def _finalize_run_summary(self):
+        failed_jobs = [job for job in self.jobs if job.status == Job_Status.FAILED]
+
+        if failed_jobs:
+            if self.manager_logging:
+                print(f"[JobManager] {len(failed_jobs)} job(s) failed.")
+        else:
+            if self.manager_logging:
+                print("[JobManager] All jobs completed successfully.")
+
+        self.all_jobs_ran = True
+
+    def _run_all_jobs_serial(self, max_jobs: int = 1, *, poll_interval_override: float | None = None):
         poll_interval = poll_interval_override if poll_interval_override is not None else self.global_poll_interval if self.global_poll_interval is not None else 5.0 
         running_jobs  = []
 
         while True:
-            # Check for jobs that can be submitted
             for job in self.jobs:
                 if len(running_jobs) >= max_jobs:
                     break
 
-                # print(job.status)
                 if job.status == Job_Status.PREPARED:
-                    self.run_job(job)
+                    self.submit_single(job)
                     running_jobs.append(job)
                     if job.logging or self.manager_logging:
                         print(f"[JobManager] Submitted job '{job.job_id}'")
 
-            # Poll running jobs
             for job in running_jobs[:]:  # iterate over copy since we may remove
                 if job.handle.is_finished():
                     if job.logging or self.manager_logging:
@@ -235,15 +252,50 @@ class Job_Manager:
                     job.update_from_output()
                     running_jobs.remove(job)
 
-            # Break if no more jobs pending or running
             all_done = all(job.status in (Job_Status.COMPLETED, Job_Status.FAILED) for job in self.jobs)
             if all_done:
                 break
 
-            # Sleep between polls
             time.sleep(poll_interval)
 
-        # Summary
+    def _run_all_jobs_batched(self, max_jobs: int = 1, *, poll_interval_override: float | None = None):
+        poll_interval = poll_interval_override if poll_interval_override is not None else self.global_poll_interval if self.global_poll_interval is not None else 5.0 
+        batch_running = False
+        batch_handle  = None
+
+        current_batch_jobs = []
+
+        while True:
+            if not batch_running:
+                pending_jobs = [job for job in self.jobs if job.status == Job_Status.PREPARED]
+
+                if pending_jobs:
+                    current_batch_jobs = pending_jobs[:max_jobs]
+                    batch_handle       = self.submit_batch(current_batch_jobs)
+
+                    if self.manager_logging:
+                        print(f"[JobManager] Submitted batch of {len(current_batch_jobs)} jobs.")
+
+                    batch_running = True
+            
+            else:
+                if batch_handle.is_finished():
+                    if self.manager_logging:
+                        print(f"[JobManager] Batch of {len(current_batch_jobs)} jobs finished.")
+
+                    for job in current_batch_jobs:
+                        job.update_from_output()
+
+                    current_batch_jobs = []
+                    batch_handle       = None
+                    batch_running      = False
+
+            all_done = all(job.status in (Job_Status.COMPLETED, Job_Status.FAILED) for job in self.jobs)
+            if all_done:
+                break
+
+            time.sleep(poll_interval)
+
         failed_jobs = [job for job in self.jobs if job.status == Job_Status.FAILED]
         if failed_jobs:
             if self.manager_logging:
@@ -253,6 +305,18 @@ class Job_Manager:
                 print("[JobManager] All jobs completed successfully.")
 
         self.all_jobs_ran = True
+    
+    def run_all_jobs(self, max_jobs: int = 1, *, poll_interval_override: float | None = None):
+
+        if max_jobs < 1:
+            raise ValueError("max_jobs must be at least 1.")
+
+        if self.batched_execution:
+            self._run_all_jobs_batched(max_jobs, poll_interval_override=poll_interval_override)
+        else:
+            self._run_all_jobs_serial(max_jobs, poll_interval_override=poll_interval_override)
+        
+        self._finalize_run_summary()
 
     def collect_successful_results(self, custom_path_for_expo: Optional[str | Path] = None):
         if not getattr(self, "all_jobs_ran", False):
@@ -293,7 +357,6 @@ class Job_Manager:
 
         return successful_exponents
     
-
     def copy_without_jobs(
     self,
     new_group_dir_name: Optional[str] = None,
@@ -324,13 +387,12 @@ class Job_Manager:
 
         # Create new Job_Manager instance
         copy_manager = Job_Manager(
-            executor_type        =None,  # We'll override executor manually
+            executor_type        = self.executor_type,
             execution_script     = self.execution_script,
             extraction_script    = self.extraction_script,
             group_dir_name       = group_dir_name_to_use,
             group_dir_path       = None,
             auto_run             = self.auto_run,
-            custom_executor      = self.executor,
             full_logging         = self.full_logging,
             manager_logging      = self.manager_logging,
             overwrite_existing   = overwrite_existing,
@@ -360,7 +422,6 @@ class Job_Manager:
             group_dir_name       = config.group_dir_name,
             group_dir_path       = config.group_dir_path,
             auto_run             = config.auto_run,
-            custom_executor      = config.custom_executor,
             full_logging         = config.full_logging,
             manager_logging      = config.manager_logging,
             overwrite_existing   = config.overwrite_existing,
@@ -375,155 +436,7 @@ class Job_Manager:
         )
         
         
-        
+     
 
 
 
-    
-
-
-
-def prepare_script(job: Molcas_Job, template: Path | str):
-    with open(template) as f:
-        content = f.read()
-
-    content = content.replace("{{JOB_NAME}}", str(job.input_file))
-
-    script = job.job_dir / "run.sh"
-    with open(script, "w") as f:
-        f.write(content)
-
-    script.chmod(0o755)
-
-    return script
-
-
-def local_bash_executor(job: Molcas_Job, script_template_path: Path | str, **kwargs):
-    """
-    Submits a local bash job for the given Molcas_Job.
-    Returns a Bash_Handle.
-    """
-    script_path   = prepare_script(job, script_template_path)
-    # Launch process
-    output_handle = open(job.output_file, "w")
-
-    process = subprocess.Popen(
-        ["bash", script_path.name],
-        cwd=job.job_dir,
-        stdout=output_handle,
-        stderr=subprocess.STDOUT,
-    )
-
-    return Bash_Handle(process, output_handle)
-
-def slurm_executor(job: Molcas_Job, script_template_path, **kwargs):
-    """
-    Submits a local bash job for the given Molcas_Job.
-    Returns a Slurm_Handle.
-    """
-    script_path = prepare_script(job, script_template_path)
-
-    result = subprocess.run(
-        ["sbatch", "--parsable", script_path.name],
-        cwd=job.job_dir,
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr)
-
-    job_id = result.stdout.strip()
-
-    return Slurm_Handle(job_id)
-
-def remote_slurm_executor(
-    job: Molcas_Job,
-    script_template_path: Path | str,
-    *,
-    ssh_target: str,
-    remote_work_root: str | Path,
-    remote_pullback_policy,
-    pull_rasorb: bool,
-    cleanup_remote: bool,
-    **kwargs,
-):
-    script_path = prepare_script(job, script_template_path)
-
-    remote_job_dir = Path(remote_work_root) / job.job_dir.name
-
-    result = subprocess.run(
-        ["ssh", ssh_target, f"mkdir -p {shlex.quote(str(remote_job_dir))}"],
-        capture_output=True,
-        text=True
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to create remote job directory '{remote_job_dir}': {result.stderr}"
-        )
-
-    for path in job.job_dir.iterdir():
-        if not path.is_file():
-            continue
-
-        result = subprocess.run(
-            ["scp", str(path), f"{ssh_target}:{str(remote_job_dir)}/"],
-            capture_output=True,
-            text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to upload '{path.name}' to '{remote_job_dir}': {result.stderr}"
-            )
-
-    result = subprocess.run(
-        [
-            "ssh",
-            ssh_target,
-            (
-                f"cd {shlex.quote(str(remote_job_dir))} && "
-                f"sbatch --parsable {shlex.quote(script_path.name)}"
-            )
-        ],
-        capture_output=True,
-        text=True
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Remote sbatch failed in '{remote_job_dir}': {result.stderr}"
-        )
-
-    job_id = result.stdout.strip()
-    if not job_id:
-        raise RuntimeError(
-            f"Remote sbatch returned no job id for local job '{job.job_id}'."
-        )
-
-    return Remote_Slurm_Handle(
-        job_id=job_id,
-        output_name=job.output_file.name,
-        ssh_target=ssh_target,
-        remote_job_dir=remote_job_dir,
-        local_job_dir=job.job_dir,
-        pullback_policy=remote_pullback_policy,
-        pull_rasorb=pull_rasorb,
-        cleanup_remote=cleanup_remote,
-    )
-
-
-executor_map = {
-    Executor_Type.LOCAL_BASH: local_bash_executor,
-    Executor_Type.LOCAL_SLURM:     slurm_executor,
-}
-
-def parse_executor_type(value: str) -> Executor_Type:
-    normalized = value.strip().lower()
-
-    for member in Executor_Type:
-        if member.value == normalized:
-            return member
-
-    allowed = ", ".join(m.value for m in Executor_Type)
-    raise ValueError(
-        f"Unknown executor_type '{value}'. Allowed values: {allowed}"
-    )

@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 from .exponent_handler import Exponent_Set
+from .job_manager import Remote_Pullback_Policy
+from .executors import Executor_Type
 from typing import Optional
 
 
@@ -59,7 +61,6 @@ def format_basis_block(exponent_set: Exponent_Set) -> str:
 
     return "\n".join(parts)
 
-
 def make_replacer(exponent_set: Exponent_Set, job_id: Optional[str] = None):
     def replacer(match) -> str:
         kind, num_str = match.groups()
@@ -89,7 +90,6 @@ def make_replacer(exponent_set: Exponent_Set, job_id: Optional[str] = None):
             raise IndexError(msg) from e
 
     return replacer
-
 
 def make_input_from_template(input_file: str | Path, template_file: str | Path, exponent_set: Exponent_Set, job_id: Optional[str] = None) -> None:
     input_file    = Path(input_file)
@@ -121,3 +121,26 @@ def make_input_from_template(input_file: str | Path, template_file: str | Path, 
             raise ValueError(msg)
 
     input_file.write_text(new_text)
+
+def parse_pullback_policy(value: str | None) -> Remote_Pullback_Policy:
+    if value is None:
+        return Remote_Pullback_Policy.STANDARD
+
+    normalized = value.strip().lower()
+
+    for member in Remote_Pullback_Policy:
+        if member.value == normalized:
+            return member
+
+    allowed = ", ".join(m.value for m in Remote_Pullback_Policy)
+    raise ValueError(f"Unknown remote_pullback_policy '{value}'. Allowed values: {allowed}")
+
+def parse_executor_type(value: str) -> Executor_Type:
+    normalized = value.strip().lower()
+
+    for member in Executor_Type:
+        if member.value == normalized:
+            return member
+
+    allowed = ", ".join(m.value for m in Executor_Type)
+    raise ValueError(f"Unknown executor_type '{value}'. Allowed values: {allowed}")

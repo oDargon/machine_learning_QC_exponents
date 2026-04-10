@@ -144,13 +144,9 @@ class Remote_Slurm_Handle(Handle):
         if self._return_code is not None:
             return
 
-        result = self._run_ssh(
-            f"sacct -j {shlex.quote(self.job_id)} --format=State --noheader"
-        )
+        result = self._run_ssh(f"sacct -j {shlex.quote(self.job_id)} --format=State --noheader")
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to query remote sacct for job {self.job_id}: {result.stderr}"
-            )
+            raise RuntimeError(f"Failed to query remote sacct for job {self.job_id}: {result.stderr}")
 
         stdout = result.stdout.strip()
         if not stdout:
@@ -165,14 +161,13 @@ class Remote_Slurm_Handle(Handle):
             self._return_code = 1
 
     def _pull_back_results(self):
-        self.local_job_dir.mkdir(parents=True, exist_ok=True)
 
         files_to_copy = []
 
         if self.pullback_policy.name == "MINIMAL":
-            files_to_copy.append(self.output_name)
+            files_to_copy.append(self.output_name + ".log")
         elif self.pullback_policy.name == "STANDARD":
-            files_to_copy.append(self.output_name)
+            files_to_copy.append(self.output_name + ".log")
         elif self.pullback_policy.name == "FULL":
             subprocess.run(
                 [
@@ -185,7 +180,7 @@ class Remote_Slurm_Handle(Handle):
             return
 
         if self.pull_rasorb:
-            files_to_copy.append("RASORB")
+            files_to_copy.append(self.output_name + ".RasOrb")
 
         for fname in files_to_copy:
             subprocess.run(
@@ -198,6 +193,14 @@ class Remote_Slurm_Handle(Handle):
             )
 
     def _cleanup_remote_dir(self):
+
+        remote_path = Path(self.remote_job_dir)
+
+        if len(remote_path.parts) < 4:
+            raise RuntimeError(
+                f"Refusing to delete shallow remote path: {self.remote_job_dir}"
+            )
+
         unsafe = {"", "/", ".", "~"}
         if self.remote_job_dir.strip() in unsafe:
             raise RuntimeError(
@@ -206,9 +209,100 @@ class Remote_Slurm_Handle(Handle):
 
         result = self._run_ssh(f"rm -rf {shlex.quote(self.remote_job_dir)}")
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to delete remote job directory '{self.remote_job_dir}': {result.stderr}"
+            raise RuntimeError(f"Failed to delete remote job directory '{self.remote_job_dir}': {result.stderr}")
+
+    def return_code(self):
+        return self._return_code
+    
+
+
+class Remote_Bash_Handle(Handle):
+    def __init__(
+        self,
+        pid: str,
+        output_name: str,
+        ssh_target: str,
+        remote_job_dir: str | Path,
+        local_job_dir: str | Path,
+        pullback_policy,
+        pull_rasorb: bool = False,
+        cleanup_remote: bool = True,
+    ):
+        self.pid              = pid
+        self.output_name      = output_name
+        self.ssh_target       = ssh_target
+        self.remote_job_dir   = str(remote_job_dir)
+        self.local_job_dir    = Path(local_job_dir)
+        self.pullback_policy  = pullback_policy
+        self.pull_rasorb      = pull_rasorb
+        self.cleanup_remote   = cleanup_remote
+
+        self._return_code      = None
+        self._artifacts_synced = False
+        self._cleanup_done     = False
+
+    def _run_ssh(self, command: str):
+        return subprocess.run(
+            ["ssh", self.ssh_target, command],
+            capture_output=True,
+            text=True
+        )
+
+    def is_finished(self) -> bool:
+        result = self._run_ssh(f"kill -0 {shlex.quote(self.pid)} 2>/dev/null")
+        if result.returncode != 0:
+            if not self._artifacts_synced:
+                self._pull_back_results()
+                self._artifacts_synced = True
+
+            if self.cleanup_remote and not self._cleanup_done:
+                self._cleanup_remote_dir()
+                self._cleanup_done = True
+
+            return True
+
+        return False
+
+    def _pull_back_results(self):
+
+        files_to_copy = []
+
+        if self.pullback_policy.name in ("MINIMAL", "STANDARD"):
+            files_to_copy.append(self.output_name)
+
+        elif self.pullback_policy.name == "FULL":
+            subprocess.run(
+                [
+                    "scp", "-r",
+                    f"{self.ssh_target}:{self.remote_job_dir}/.",
+                    str(self.local_job_dir)
+                ],
+                check=False
             )
+            return
+
+        if self.pull_rasorb:
+            files_to_copy.append(self.output_name + ".RasOrb")
+
+        for fname in files_to_copy:
+            subprocess.run(
+            [
+                "scp",
+                "-q",  # quiet
+                f"{self.ssh_target}:{self.remote_job_dir}/{fname}",
+                str(self.local_job_dir / fname)
+            ]
+        )
+
+    def _cleanup_remote_dir(self):
+        remote_path = Path(self.remote_job_dir)
+
+        if len(remote_path.parts) < 4:
+            raise RuntimeError(f"Refusing to delete shallow remote path: {self.remote_job_dir}")
+
+        result = self._run_ssh(f"rm -rf {shlex.quote(self.remote_job_dir)}")
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to delete remote job directory '{self.remote_job_dir}': {result.stderr}")
 
     def return_code(self):
         return self._return_code

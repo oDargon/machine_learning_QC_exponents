@@ -2,15 +2,26 @@ from pathlib import Path
 import argparse
 import inspect
 import yaml
-
+import subprocess
+import shlex
 from .exponent_handler import Exponent_Set
-from .job_manager import Job_Manager_Config, parse_executor_type
+from .job_manager import Job_Manager_Config
+from .executors import Executor_Type
 from .cma_opt import cma_culling
 from .objectives import Ground_Energy_Objective
+from .parsing import parse_executor_type, parse_pullback_policy
 
 
 SUPPLIED = {"start_exp", "objective", "work_dir"}
 
+
+def parse_bool(value: str) -> bool:
+    v = value.strip().lower()
+    if v in {"true", "1"}:
+        return True
+    if v in {"false", "0"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean: {value}")
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -23,8 +34,15 @@ def parse_args():
     parser.add_argument("config", type=Path)
     parser.add_argument("executor_type", type=str)
 
-    parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--poll-time", type=float, default=5.0)
+    parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--poll_time", type=float, default=5.0)
+
+    parser.add_argument("--over_ssh", type=parse_bool, default=False)
+    parser.add_argument("--ssh_target", type=str, default=None)
+    parser.add_argument("--remote_work_root", type=Path, default=None)
+    parser.add_argument("--remote_pullback_policy", type=str, default=None)
+    parser.add_argument("--pull_rasorb", type=parse_bool, default=False)
+    parser.add_argument("--cleanup_remote", type=parse_bool, default=True)
 
     return parser.parse_args()
 
@@ -73,7 +91,29 @@ def resolve_run_dir(work_dir: Path, run_name: str | None) -> Path:
     return (work_dir / name).resolve()
 
 
+def prepare_remote_work_root(ssh_target: str, remote_work_root: str | Path, cleanup_remote: bool) -> None:
+    remote_root = str(remote_work_root)
+    remote_path = Path(remote_root)
 
+    if len(remote_path.parts) < 4:
+        raise RuntimeError(f"Refusing to clean shallow remote path: {remote_root}")
+
+    if cleanup_remote:
+        cmd = (
+            f"mkdir -p {shlex.quote(remote_root)} && "
+            f"find {shlex.quote(remote_root)} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +"
+        )
+    else:
+        cmd = f"mkdir -p {shlex.quote(remote_root)}"
+
+    result = subprocess.run(
+        ["ssh", ssh_target, cmd],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to prepare remote work root '{remote_root}': {result.stderr}")
 
 
 def main(
@@ -86,23 +126,42 @@ def main(
     executor_type: str,
     run_name: str | None = None,
     poll_time: float     = 5.0,
+    over_ssh: bool                     = False,
+    ssh_target: str | None             = None,
+    remote_work_root: Path | None      = None,
+    remote_pullback_policy: str | None = None,
+    pull_rasorb: bool                  = False,
+    cleanup_remote: bool               = True,
 ) -> int:
 
     params = load_yaml(config_path)
     validate_params(params)
 
-    run_dir = resolve_run_dir(work_dir_path, run_name)
+    run_dir    = resolve_run_dir(work_dir_path, run_name)
+    executor_t = parse_executor_type(executor_type)
 
-    executor = parse_executor_type(executor_type)
+    if over_ssh:
+        if ssh_target is None:
+            raise ValueError("ssh_target must be provided when over_ssh is true.")
+        if remote_work_root is None:
+            raise ValueError("remote_work_root must be provided when over_ssh is true.")
+
+        prepare_remote_work_root(ssh_target=ssh_target, remote_work_root=remote_work_root, cleanup_remote=cleanup_remote)
 
     C = Job_Manager_Config(
-        executor,
-        run_script_path,
-        extract_script_path,
-        manager_logging      = False,
-        overwrite_existing   = False,
-        custom_poll_interval = poll_time,
-    )
+        executor_type           = executor_t,
+        execution_script        = run_script_path,
+        extraction_script       = extract_script_path,
+        manager_logging         = False,
+        overwrite_existing      = False,
+        custom_poll_interval    = poll_time,
+        over_ssh                = over_ssh,
+        ssh_target              = ssh_target,
+        remote_work_root        = remote_work_root,
+        remote_pullback_policy  = parse_pullback_policy(remote_pullback_policy),
+        pull_rasorb             = pull_rasorb,
+        cleanup_remote          = cleanup_remote,
+)
 
     exp = Exponent_Set.from_file(exp_path)
     obj = Ground_Energy_Objective(template_path, C)
@@ -125,5 +184,11 @@ if __name__ == "__main__":
             executor_type       = args.executor_type,
             run_name            = args.run_name,
             poll_time           = args.poll_time,
+            over_ssh               = args.over_ssh,
+            ssh_target             = args.ssh_target,
+            remote_work_root       = args.remote_work_root,
+            remote_pullback_policy = args.remote_pullback_policy,
+            pull_rasorb            = args.pull_rasorb,
+            cleanup_remote         = args.cleanup_remote,
         )
     )

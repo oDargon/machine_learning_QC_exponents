@@ -71,6 +71,33 @@ def validate_run_spec(spec: dict) -> None:
 
     if "overwrite" in spec and not isinstance(spec["overwrite"], bool):
         raise TypeError("overwrite must be a boolean.")
+    
+
+    if "over_ssh" in spec and not isinstance(spec["over_ssh"], bool):
+        raise TypeError("over_ssh must be a boolean if provided.")
+
+    over_ssh = spec.get("over_ssh", False)
+
+    if over_ssh:
+        if "ssh_target" not in spec or spec["ssh_target"] is None:
+            raise TypeError("ssh_target must be provided when over_ssh is true.")
+        if not isinstance(spec["ssh_target"], str) or not spec["ssh_target"].strip():
+            raise TypeError("ssh_target must be a non-empty string when over_ssh is true.")
+
+        if "remote_work_root" not in spec or spec["remote_work_root"] is None:
+            raise TypeError("remote_work_root must be provided when over_ssh is true.")
+        if not isinstance(spec["remote_work_root"], (str, Path)):
+            raise TypeError("remote_work_root must be a path-like string when over_ssh is true.")
+
+        if "remote_pullback_policy" in spec and spec["remote_pullback_policy"] is not None:
+            if not isinstance(spec["remote_pullback_policy"], str):
+                raise TypeError("remote_pullback_policy must be a string if provided.")
+
+        if "pull_rasorb" in spec and not isinstance(spec["pull_rasorb"], bool):
+            raise TypeError("pull_rasorb must be a boolean if provided.")
+
+        if "cleanup_remote" in spec and not isinstance(spec["cleanup_remote"], bool):
+            raise TypeError("cleanup_remote must be a boolean if provided.")
 
 def resolve_launcher_dir(spec: dict) -> Path:
     base = Path(spec["work_dir"]).resolve() if spec.get("work_dir") else Path.cwd().resolve()
@@ -88,7 +115,7 @@ def resolve_launcher_dir(spec: dict) -> Path:
     # auto-generate run_N
     i = 1
     while True:
-        candidate = base / f"run_{i:03d}"
+        candidate = base / f"exp_evo_{i:03d}"
         if not candidate.exists():
             return candidate.resolve()
         i += 1
@@ -174,10 +201,28 @@ def build_child_cmd(spec: dict, staged: dict, work_dir: Path) -> list[str]:
     ]
 
     if spec.get("run_name") is not None:
-        cmd.extend(["--run-name", spec["run_name"]])
+        cmd.extend(["--run_name", spec["run_name"]])
 
     if "poll_time" in spec:
-        cmd.extend(["--poll-time", str(spec["poll_time"])])
+        cmd.extend(["--poll_time", str(spec["poll_time"])])
+
+    if spec.get("over_ssh", False):
+        cmd.extend(["--over_ssh", "true"])
+
+        if spec.get("ssh_target") is not None:
+            cmd.extend(["--ssh_target", str(spec["ssh_target"])])
+
+        if spec.get("remote_work_root") is not None:
+            cmd.extend(["--remote_work_root", str(spec["remote_work_root"])])
+
+        if spec.get("remote_pullback_policy") is not None:
+            cmd.extend(["--remote_pullback_policy", str(spec["remote_pullback_policy"])])
+
+        if "pull_rasorb" in spec:
+            cmd.extend(["--pull_rasorb", str(spec["pull_rasorb"]).lower()])
+
+        if "cleanup_remote" in spec:
+            cmd.extend(["--cleanup_remote", str(spec["cleanup_remote"]).lower()])
 
     return cmd
 
@@ -259,7 +304,6 @@ def main(run_spec_path: Path) -> int:
             pass
 
         return 1
-
 
 def cli() -> int:
     args = parse_args()

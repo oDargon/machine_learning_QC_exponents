@@ -252,6 +252,7 @@ def cma_culling(
     logging: int                 = 0,
 ):
 
+    print(threads)
     work_dir = Path(work_dir).resolve()
 
     if work_dir.exists() and overwrite:
