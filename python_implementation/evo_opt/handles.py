@@ -2,6 +2,9 @@ import subprocess
 from abc import ABC, abstractmethod
 import shlex
 from pathlib import Path
+import tarfile
+import tempfile
+import shutil
 
 class Handle(ABC):
     """
@@ -214,9 +217,8 @@ class Remote_Slurm_Handle(Handle):
     def return_code(self):
         return self._return_code
     
-
-
 class Remote_Bash_Handle(Handle):
+
     def __init__(
         self,
         pid: str,
@@ -225,7 +227,7 @@ class Remote_Bash_Handle(Handle):
         remote_job_dir: str | Path,
         local_job_dir: str | Path,
         pullback_policy,
-        pull_rasorb: bool = False,
+        pull_rasorb: bool    = False,
         cleanup_remote: bool = True,
     ):
         self.pid              = pid
@@ -303,6 +305,173 @@ class Remote_Bash_Handle(Handle):
         result = self._run_ssh(f"rm -rf {shlex.quote(self.remote_job_dir)}")
         if result.returncode != 0:
             raise RuntimeError(f"Failed to delete remote job directory '{self.remote_job_dir}': {result.stderr}")
+
+    def return_code(self):
+        return self._return_code
+    
+
+class Remote_Bash_Batch_Handle(Handle):
+    def __init__(
+        self,
+        pid_map: dict[str, str],
+        output_name_map: dict[str, str],
+        ssh_target: str,
+        remote_work_root: str | Path,
+        remote_job_dir_map: dict[str, str | Path],
+        local_job_dir_map: dict[str, str | Path],
+        pullback_policy,
+        pull_rasorb: bool = False,
+        cleanup_remote: bool = True,
+    ):
+        self.pid_map            = pid_map
+        self.output_name_map    = output_name_map
+        self.ssh_target         = ssh_target
+        self.remote_work_root   = str(remote_work_root)
+        self.remote_job_dir_map = {k: str(v) for k, v in remote_job_dir_map.items()}
+        self.local_job_dir_map  = {k: Path(v) for k, v in local_job_dir_map.items()}
+        self.pullback_policy    = pullback_policy
+        self.pull_rasorb        = pull_rasorb
+        self.cleanup_remote     = cleanup_remote
+
+        self._return_code       = None
+        self._artifacts_synced  = False
+        self._cleanup_done      = False
+
+        cmd_lines = []
+
+        for job_name, pid in self.pid_map.items():
+            cmd_lines.append(f"kill -0 {shlex.quote(pid)} 2>/dev/null || echo dead:{job_name}")
+
+        self._status_cmd = "\n".join(cmd_lines)
+
+    def _run_ssh(self, command: str):
+        return subprocess.run(
+            ["ssh", self.ssh_target, command],
+            capture_output=True,
+            text=True
+        )
+    
+    def is_finished(self) -> bool:
+        result = self._run_ssh(self._status_cmd)
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to poll remote jobs: {result.stderr}")
+
+        dead_jobs = set()
+
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if line.startswith("dead:"):
+                dead_jobs.add(line.split(":", 1)[1])
+
+        # if any job still alive → not finished
+        if len(dead_jobs) != len(self.pid_map):
+            return False
+
+        # all dead → finished → trigger pullback + cleanup
+        if not self._artifacts_synced:
+            self._pull_back_results()
+            self._artifacts_synced = True
+
+        if self.cleanup_remote and not self._cleanup_done:
+            self._cleanup_remote_dirs()
+            self._cleanup_done = True
+
+        return True
+    
+    def _pull_back_results(self):
+
+        remote_stage_dir = Path(self.remote_work_root) / ".batch_pullback"
+        remote_tar       = Path(self.remote_work_root) / "batch_results.tar.gz"
+
+        cmd_lines = [
+            f'cd {shlex.quote(str(self.remote_work_root))}',
+            f'rm -rf {shlex.quote(remote_stage_dir.name)}',
+            f'mkdir -p {shlex.quote(remote_stage_dir.name)}',
+        ]
+
+        for job_name, remote_job_dir in self.remote_job_dir_map.items():
+            remote_job_dir = Path(remote_job_dir)
+            output_name    = self.output_name_map[job_name]
+
+            cmd_lines.append(f'mkdir -p {shlex.quote(str(Path(remote_stage_dir.name) / job_name))}')
+
+            if self.pullback_policy.name in ("MINIMAL", "STANDARD"):
+                cmd_lines.append(
+                    f'cp {shlex.quote(str(remote_job_dir / output_name))} '
+                    f'{shlex.quote(str(remote_stage_dir / job_name / output_name))}'
+                )
+
+                if self.pull_rasorb:
+                    cmd_lines.append(
+                        f'cp {shlex.quote(str(remote_job_dir / (output_name + ".RasOrb")))} '
+                        f'{shlex.quote(str(remote_stage_dir / job_name / (output_name + ".RasOrb")))}'
+                    )
+
+            elif self.pullback_policy.name == "FULL":
+                cmd_lines.append(
+                f'cp -r {shlex.quote(str(remote_job_dir))}/. '
+                f'{shlex.quote(str(remote_stage_dir / job_name))}'
+            )
+
+        cmd_lines.append(
+            f'tar -czf {shlex.quote(remote_tar.name)} {shlex.quote(remote_stage_dir.name)}'
+        )
+
+        remote_cmd = "\n".join(cmd_lines)
+
+        result = self._run_ssh(remote_cmd)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to stage remote results: {result.stderr}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+
+            tmpdir       = Path(tmpdir)
+            local_tar    = tmpdir / "batch_results.tar.gz"
+            extract_root = tmpdir / "extracted"
+            extract_root.mkdir(parents=True, exist_ok=True)
+
+            result = subprocess.run(
+                ["scp", f"{self.ssh_target}:{str(remote_tar)}", str(local_tar)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to copy remote tarball back: {result.stderr}")
+
+            with tarfile.open(local_tar, "r:gz") as tar:
+                tar.extractall(path=extract_root)
+
+            for job_name, local_job_dir in self.local_job_dir_map.items():
+                extracted_job_dir = extract_root / remote_stage_dir.name / job_name
+                local_job_dir     = Path(local_job_dir)
+
+                if not extracted_job_dir.exists():
+                    raise RuntimeError(f"Missing extracted results for job '{job_name}'")
+
+                subprocess.run(
+                ["cp", "-r", f"{str(extracted_job_dir)}/.", str(local_job_dir)],
+                check=True,
+            )
+
+    def _cleanup_remote_dirs(self):
+        remote_paths = [Path(p) for p in self.remote_job_dir_map.values()]
+        remote_paths.append(Path(self.remote_work_root) / ".batch_pullback")
+        remote_paths.append(Path(self.remote_work_root) / "batch_results.tar.gz")
+
+        unsafe = {"", "/", ".", "~"}
+
+        for path in remote_paths:
+            if str(path).strip() in unsafe:
+                raise RuntimeError(f"Refusing to delete unsafe remote path: {path}")
+            if len(path.parts) < 4:
+                raise RuntimeError(f"Refusing to delete shallow remote path: {path}")
+
+        joined_paths = " ".join(shlex.quote(str(p)) for p in remote_paths)
+
+        result = self._run_ssh(f"rm -rf {joined_paths}")
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to delete remote batch paths: {result.stderr}")
 
     def return_code(self):
         return self._return_code
