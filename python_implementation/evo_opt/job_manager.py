@@ -5,16 +5,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from .molcas_handler import Molcas_Job, Job_Status
 from .handles import Handle
-from .executors import Executor_Type, BATCHED_EXECUTORS, REMOTE_EXECUTORS, executor_map
+from .executors import executor_map
+from .common import Remote_Pullback_Policy, Executor_Type, BATCHED_EXECUTORS, REMOTE_EXECUTORS
 import time
 import shutil
 
 
 
-class Remote_Pullback_Policy(Enum):
-    MINIMAL  = "minimal"   # e.g. only energy from log file at remote
-    STANDARD = "standard"  # log file and optionaly RASORB file
-    FULL     = "full"      # everything in remote job dir
+
 
 @dataclass
 class Job_Manager_Config:
@@ -137,13 +135,15 @@ class Job_Manager:
             return
 
         if not self.over_ssh:
-            return
+            raise ValueError(
+                f"Executor type {self.executor_type.value} requires over_ssh=True."
+            )
 
         if not self.ssh_target:
-            raise ValueError("When over_ssh=True, ssh_target must be provided.")
+            raise ValueError("When using a remote executor, ssh_target must be provided.")
 
         if self.remote_work_root is None:
-            raise ValueError("When over_ssh=True, remote_work_root must be provided.")
+            raise ValueError("When using a remote executor, remote_work_root must be provided.")
 
     def add_job(self, exponent_set, template_path, *, name: Optional[str] = None, this_log: bool = False):
 

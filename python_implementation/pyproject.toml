@@ -15,3 +15,4 @@ packages = ["evo_opt"]
 exptoinp   = "evo_opt.exp_to_inp_tool:main"
 expcomp    = "evo_opt.exp_compare_tool:main"
 exptoexpo  = "evo_opt.exp_to_expo_tool:main"
+expevo     = "evo_opt.exp_evo_tool:cli"

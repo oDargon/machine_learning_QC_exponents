@@ -1,8 +1,7 @@
 from pathlib import Path
 import re
 from .exponent_handler import Exponent_Set
-from .job_manager import Remote_Pullback_Policy
-from .executors import Executor_Type
+from .common import Remote_Pullback_Policy, Executor_Type
 from typing import Optional
 
 

@@ -5,60 +5,21 @@ import shutil
 import tarfile
 from pathlib import Path
 from typing import List 
-from enum import Enum
 from .molcas_handler import Molcas_Job
-from .handles import Bash_Handle, Remote_Bash_Batch_Handle, Slurm_Handle, Remote_Bash_Handle, Remote_Slurm_Handle
+from .handles import Bash_Handle, Slurm_Handle, Remote_Bash_Handle, Remote_Slurm_Handle, Remote_Bash_Batch_Handle, Remote_Slurm_Batch_Handle
+from .common import Executor_Type
+from time import sleep
 
 
 
-class Executor_Type(Enum):
-    LOCAL_BASH           = "local_bash"
-    LOCAL_SLURM          = "local_slurm"
-    REMOTE_BASH_SERIAL   = "remote_bash_serial"
-    REMOTE_SLURM_SERIAL  = "remote_slurm_serial"
-    REMOTE_BASH_BATCHED  = "remote_bash_batched"
-    REMOTE_SLURM_BATCHED = "remote_slurm_batched"
 
-SERIAL_EXECUTORS = {
-    Executor_Type.LOCAL_BASH,
-    Executor_Type.LOCAL_SLURM,
-    Executor_Type.REMOTE_BASH_SERIAL,
-    Executor_Type.REMOTE_SLURM_SERIAL,
-}
-
-BATCHED_EXECUTORS = {
-    Executor_Type.REMOTE_BASH_BATCHED,
-    Executor_Type.REMOTE_SLURM_BATCHED,
-}
-
-REMOTE_EXECUTORS = {
-    Executor_Type.REMOTE_BASH_SERIAL,
-    Executor_Type.REMOTE_SLURM_SERIAL,
-    Executor_Type.REMOTE_BASH_BATCHED,
-    Executor_Type.REMOTE_SLURM_BATCHED,
-}
-
-
-# def prepare_script_local(job: Molcas_Job, template: Path | str):
-#     with open(template) as f:
-#         content = f.read()
-
-#     content = content.replace("{{JOB_NAME}}", str(job.input_file))
-
-#     script = job.job_dir / "run.sh"
-#     with open(script, "w") as f:
-#         f.write(content)
-
-#     script.chmod(0o755)
-#     return script
-
-def prepare_script(job: Molcas_Job, template: Path | str):
+def prepare_run_script(job: Molcas_Job, template: Path | str):
     with open(template) as f:
         content = f.read()
 
     content = content.replace("{{JOB_NAME}}", job.input_file.name)
 
-    script = job.job_dir / "run.sh"
+    script = job.job_dir / f"run{template.suffix}"
     with open(script, "w") as f:
         f.write(content)
 
@@ -72,7 +33,7 @@ def local_bash_executor(job: Molcas_Job, script_template_path: Path | str, **kwa
     Submits a local bash job for the given Molcas_Job.
     Returns a Bash_Handle.
     """
-    script_path   = prepare_script(job, script_template_path)
+    script_path   = prepare_run_script(job, script_template_path)
     # Launch process
     output_handle = open(job.output_file, "w")
 
@@ -90,7 +51,7 @@ def slurm_executor(job: Molcas_Job, script_template_path, **kwargs):
     Submits a local bash job for the given Molcas_Job.
     Returns a Slurm_Handle.
     """
-    script_path = prepare_script(job, script_template_path)
+    script_path = prepare_run_script(job, script_template_path)
 
     result = subprocess.run(
         ["sbatch", "--parsable", script_path.name],
@@ -118,7 +79,7 @@ def remote_bash_executor_serial(
     **kwargs,
 ):  
 
-    script_path    = prepare_script(job, script_template_path)
+    script_path    = prepare_run_script(job, script_template_path)
     remote_job_dir = Path(remote_work_root) / job.job_dir.name
 
     result = subprocess.run(
@@ -192,7 +153,7 @@ def remote_slurm_executor_serial(
     **kwargs,
 ):
     
-    script_path    = prepare_script(job, script_template_path)
+    script_path    = prepare_run_script(job, script_template_path)
     remote_job_dir = Path(remote_work_root) / job.job_dir.name
 
     result = subprocess.run(
@@ -251,18 +212,9 @@ def remote_slurm_executor_serial(
         cleanup_remote  = cleanup_remote,
     )
 
-def remote_bash_executor_batched(
-    jobs: List[Molcas_Job],
-    script_template_path: Path | str,
-    *,
-    ssh_target: str,
-    remote_work_root: str | Path,
-    remote_pullback_policy,
-    pull_rasorb: bool,
-    cleanup_remote: bool,
-    **kwargs,
-):
-    remote_work_root = Path(remote_work_root)
+
+
+def bash_send_tar_batch(jobs: List[Molcas_Job], script_template_path: Path | str, ssh_target: str, remote_work_root: str | Path):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         staging_root = Path(tmpdir) / "batch_payload"
@@ -270,7 +222,7 @@ def remote_bash_executor_batched(
 
         # Build staging tree
         for job in jobs:
-            script_path = prepare_script(job, script_template_path)
+            script_path = prepare_run_script(job, script_template_path)
 
             staged_job_dir = staging_root / job.job_dir.name
             staged_job_dir.mkdir(parents=True, exist_ok=True)
@@ -284,7 +236,7 @@ def remote_bash_executor_batched(
             tar.add(staging_root, arcname=".")
 
         remote_tar = remote_work_root / "batch_payload.tar.gz"
-
+        
         # Upload tarball
         result = subprocess.run(
             ["scp", str(tar_path), f"{ssh_target}:{str(remote_tar)}"],
@@ -309,11 +261,27 @@ def remote_bash_executor_batched(
         if result.returncode != 0:
             raise RuntimeError(f"Failed to extract remote tarball: {result.stderr}")
 
+def remote_bash_executor_batched(
+    jobs: List[Molcas_Job],
+    script_template_path: Path | str,
+    *,
+    ssh_target: str,
+    remote_work_root: str | Path,
+    remote_pullback_policy,
+    pull_rasorb: bool,
+    cleanup_remote: bool,
+    **kwargs,
+):
+    remote_work_root = Path(remote_work_root)
+
+    bash_send_tar_batch(jobs, script_template_path, ssh_target, remote_work_root)
+
+    pid_file = remote_work_root / ".batch_pids"
 
     remote_cmd_lines = [
-    f"cd {shlex.quote(str(remote_work_root))}",
-    'PID_FILE=".batch_pids"',
-    '> "$PID_FILE"',
+        f"cd {shlex.quote(str(remote_work_root))}",
+        f'PID_FILE={shlex.quote(str(pid_file))}',
+        '> "$PID_FILE"',
     ]
 
     for job in jobs:
@@ -330,7 +298,6 @@ def remote_bash_executor_batched(
         )
 
     remote_cmd_lines.append('cat "$PID_FILE"')
-
     remote_cmd = "\n".join(remote_cmd_lines)
 
     result = subprocess.run(
@@ -342,8 +309,11 @@ def remote_bash_executor_batched(
     if result.returncode != 0:
         raise RuntimeError(f"Remote batch launch failed:\n{result.stderr}")
 
-    expected_names = {job.job_dir.name for job in jobs}
-    pid_map        = {}
+    expected_names     = {job.job_dir.name for job in jobs}
+    pid_map            = {}
+    output_name_map    = {job.job_dir.name: job.output_file.name for job in jobs}
+    remote_job_dir_map = {job.job_dir.name: remote_work_root / job.job_dir.name for job in jobs}
+    local_job_dir_map  = {job.job_dir.name: job.job_dir for job in jobs}
 
     for line in result.stdout.strip().splitlines():
         line = line.strip()
@@ -353,7 +323,7 @@ def remote_bash_executor_batched(
         pid_map[job_name] = pid
 
     received_names = set(pid_map)
-    missing = expected_names - received_names
+    missing        = expected_names - received_names
 
     if missing:
         raise RuntimeError(
@@ -362,11 +332,6 @@ def remote_bash_executor_batched(
             f"Started:  {sorted(received_names)}\n"
             f"Missing:  {sorted(missing)}"
         )
-
-
-    output_name_map    = {job.job_dir.name: job.output_file.name for job in jobs}
-    remote_job_dir_map = {job.job_dir.name: remote_work_root / job.job_dir.name for job in jobs}
-    local_job_dir_map  = {job.job_dir.name: job.job_dir for job in jobs}
 
     return Remote_Bash_Batch_Handle(
         pid_map            = pid_map,
@@ -391,7 +356,79 @@ def remote_slurm_executor_batched(
     cleanup_remote: bool,
     **kwargs,
 ): 
-    return
+    remote_work_root = Path(remote_work_root)
+
+    bash_send_tar_batch(jobs, script_template_path, ssh_target, remote_work_root)
+
+    pid_file = remote_work_root / ".batch_jobids"
+
+    
+
+    remote_cmd_lines = [
+        f"cd {shlex.quote(str(remote_work_root))}",
+        f'PID_FILE={shlex.quote(str(pid_file))}',
+        '> "$PID_FILE"',  
+    ]
+
+    for job in jobs:
+        remote_job_dir = remote_work_root / job.job_dir.name
+
+        remote_cmd_lines.append(
+            f'cd {shlex.quote(str(remote_job_dir))}; '
+            f'JOB_ID=$(sbatch --parsable run.sbatch); '
+            f'echo "{job.job_dir.name}:$JOB_ID" >> "$PID_FILE"; '
+            f'cd {shlex.quote(str(remote_work_root))}'
+        )
+
+    remote_cmd_lines.append('cat "$PID_FILE"')
+    remote_cmd = "\n".join(remote_cmd_lines)
+
+    result = subprocess.run(
+        ["ssh", ssh_target, remote_cmd],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Remote batch launch failed:\n{result.stderr}")
+
+    expected_names     = {job.job_dir.name for job in jobs}
+    jobid_map          = {}
+    output_name_map    = {job.job_dir.name: job.output_file.name for job in jobs}
+    remote_job_dir_map = {job.job_dir.name: remote_work_root / job.job_dir.name for job in jobs}
+    local_job_dir_map  = {job.job_dir.name: job.job_dir for job in jobs}
+
+    for line in result.stdout.strip().splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        job_name, pid = line.split(":", 1)
+        jobid_map[job_name] = pid
+
+    received_names = set(jobid_map)
+    missing        = expected_names - received_names
+
+    if missing:
+        raise RuntimeError(
+            "Some remote jobs failed to launch.\n"
+            f"Expected: {sorted(expected_names)}\n"
+            f"Started:  {sorted(received_names)}\n"
+            f"Missing:  {sorted(missing)}"
+        )
+
+    return Remote_Slurm_Batch_Handle(
+        jobid_map          = jobid_map,
+        output_name_map    = output_name_map,
+        ssh_target         = ssh_target,
+        remote_work_root   = remote_work_root,
+        remote_job_dir_map = remote_job_dir_map,
+        local_job_dir_map  = local_job_dir_map,
+        pullback_policy    = remote_pullback_policy,
+        pull_rasorb        = pull_rasorb,
+        cleanup_remote     = cleanup_remote,
+    )
+
+
 
 executor_map = {
     Executor_Type.LOCAL_BASH:          local_bash_executor,
