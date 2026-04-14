@@ -7,6 +7,11 @@ name = "evo_opt"
 version = "0.1.0"
 description = "My evo optimization tools"
 requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "cma",
+    "PyYAML",
+]
 
 [tool.setuptools]
 packages = ["evo_opt"]
