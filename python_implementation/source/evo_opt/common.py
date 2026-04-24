@@ -1,6 +1,13 @@
 from enum import Enum
 
 
+class Job_Status(Enum):
+    CREATED   = "created"
+    PREPARED  = "prepared"
+    SUBMITTED = "submitted"
+    COMPLETED = "completed"
+    FAILED    = "failed"
+
 class Remote_Pullback_Policy(Enum):
     MINIMAL  = "minimal"   # e.g. only energy from log file at remote
     STANDARD = "standard"  # log file and optionaly RASORB file

@@ -9,7 +9,6 @@ from datetime import datetime
 import time
 import cma
 import csv
-import inspect
 
 def hms(seconds: float) -> str:
     seconds = int(seconds)

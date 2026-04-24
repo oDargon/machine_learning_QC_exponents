@@ -2,8 +2,8 @@ from argparse import ArgumentParser
 from math import exp
 from pathlib import Path
 
-from evo_opt.exponent_handler import Exponent_Set
-from evo_opt.opt_tools_new import exponent_difference_metrics
+from source.evo_opt.exponent_handler import Exponent_Set
+from source.evo_opt.opt_tools_new import exponent_difference_metrics
 
 
 def format_shape(lengths: list[int]) -> str:

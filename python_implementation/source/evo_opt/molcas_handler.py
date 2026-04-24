@@ -1,18 +1,13 @@
 from pathlib import Path
-from enum import Enum
-import re
+from typing import List
 import shutil
 from .exponent_handler import Exponent_Set
 from .parsing import make_input_from_template
+from .common import Job_Status
 import subprocess
 
 
-class Job_Status(Enum):
-    CREATED   = "created"
-    PREPARED  = "prepared"
-    SUBMITTED = "submitted"
-    COMPLETED = "completed"
-    FAILED    = "failed"
+
 
 
 class Molcas_Job:
@@ -29,6 +24,7 @@ class Molcas_Job:
         input_name: str = None,
         logging: bool   = False,
         name: str       = None,
+        rasorbs: None | Path | str | List[Path | str] = None,
         
     ):
         
@@ -49,12 +45,14 @@ class Molcas_Job:
         self.status          = Job_Status.CREATED
         self.external_job_id = None
         self.results         = None
+        self.out_ras_orbs    = []
 
         # Derived paths
         self.input_file   = self.job_dir / (self.input_name +".input")
         self.output_file  = self.job_dir / (self.input_name+".log")
         self.extract_file = self.job_dir / ("extractor.sh")
-
+        self.raw_rasorbs  = rasorbs
+        self.rasorb_files = []
     
     def prepare_job(self):
         if (self.logging): print(f"[MolcasJob] Preparing job '{self.job_id}' in {self.job_dir}")
@@ -88,8 +86,46 @@ class Molcas_Job:
 
         make_input_from_template(self.input_file, self.template_path, self.exponent_set, job_id=self.job_id)
         self.make_extractor()
+
+        self.rasorb_files = []
+        for src in self._validate_rasorbs():
+            dst = self.job_dir / src.name
+            shutil.copy(src, dst)
+            self.rasorb_files.append(dst)
+
         self.status = Job_Status.PREPARED
         # self.exponent_set.save(self.job_dir)
+
+    def _validate_rasorbs(self) -> list[Path]:
+        if self.raw_rasorbs is None:
+            return []
+
+        if isinstance(self.raw_rasorbs, (str, Path)):
+            items = [self.raw_rasorbs]
+        elif isinstance(self.raw_rasorbs, list):
+            items = self.raw_rasorbs
+        else:
+            raise ValueError(
+                f"Invalid rasorb value: {self.raw_rasorbs}. "
+                "Must be None, str, Path, or list of str/Path."
+            )
+
+        result = []
+        for item in items:
+            if not isinstance(item, (str, Path)): 
+                raise ValueError(f"Invalid rasorb item: {item}. Must be str or Path.")
+
+            path = Path(item)
+
+            if not path.exists():
+                raise FileNotFoundError(f"Rasorb file does not exist: {path}")
+
+            if path.suffix.lower() != ".rasorb":
+                raise ValueError(f"Invalid rasorb file extension: {path}. Expected a .Rasorb file.")
+
+            result.append(path)
+
+        return result
 
     def make_extractor(self):
         if not self.extract_path.exists():
