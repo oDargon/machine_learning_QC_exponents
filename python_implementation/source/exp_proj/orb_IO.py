@@ -1,4 +1,4 @@
-from numpy import ndarray, float64, str_
+from numpy import ndarray, float64, str_, zeros, array, fromstring
 from numpy.typing import NDArray
 from typing import List
 
@@ -33,8 +33,8 @@ class MO_input:
         if self.nsym < 0 or self.nsym > 8:
             raise ValueError("Number of symmetries (nsym) must be a non-negative integer <= 8.")
 
-        self.nbas = self.info_vals[3+self.nsym:3+2*self.nsym].astype(int)
-        self.norb = self.info_vals[3:3+self.nsym].astype(int)
+        self.nbas = self.info_vals[3:3+self.nsym].astype(int)
+        self.norb = self.info_vals[3+self.nsym:3+2*self.nsym].astype(int)
 
         self.validate_shapes()
 
@@ -97,7 +97,9 @@ class MO_input:
         )
     
 
-INP_ORB_VERSION_MAGIC = "#INPORB 2.2"
+INP_ORB_VERSION_MAGIC  = "#INPORB 2.2"
+UNIQUE_FIELDS_MAGIC    = ["#EXTRAS", "#ORB", "#OCC", "ONE", "INDEX"]
+NUMBERS_PER_LINE_MAGIC = 5
 
 def read_mo_input(file_path: str) -> MO_input:
 
@@ -129,21 +131,47 @@ def read_mo_input(file_path: str) -> MO_input:
                 counter = i + 5
                 break
         
-        unique_fields = ["#EXTRAS", "#ORB", "#OCC", "ONE", "INDEX"]
-
+        found = [0,0,0,0,0]
         while counter < len(lines):
 
-            if lines[counter].strip() == "#EXTRAS":
+            if lines[counter].strip() == "#EXTRAS" and not found[0]:
                 counter += 2
                 two_el_energy = float64(lines[counter].strip())
                 counter += 1
+                found[0] = 1
 
-            if lines[counter].strip() == "#ORB":
-                counter += 1
-                if lines[counter].strip().startswith('*'):
-                    print("hi")
+            if lines[counter].strip() == "#ORB" and not found[1]:
+                num_irreps = info_vals[1]
+                nbas       = info_vals[3:3+num_irreps]
+                norb       = info_vals[3+num_irreps:3+2*num_irreps]
+                counter   += 1
+                    
+                orbital_coeffs = []
+                for i in range(num_irreps):
+                    coef_block = zeros([norb[i],nbas[i]])
+                    irrep_rows = (nbas[i] + NUMBERS_PER_LINE_MAGIC -1)//NUMBERS_PER_LINE_MAGIC
+                    for j in range(norb[i]):
+                        pos      = 0
+                        counter += 1
+                        for z in range(irrep_rows):
+                            if lines[counter].strip().startswith('*'):
+                                break
+                            elif counter > len(lines):
+                                break
+                            nums                    = array( [float64(x) for x in lines[counter].strip().split()] )
+                            n                       = nums.size
+                            coef_block[j,pos:pos+n] = nums
+                            pos                    += n
+                            counter                += 1
+                    
+                    orbital_coeffs.append(coef_block)    
+                found[1] = 1
 
+                print(orbital_coeffs[-1][0])
+                exit()
             counter += 1
+
+            
 
 
     return MO_input
