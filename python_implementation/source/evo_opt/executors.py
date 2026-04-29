@@ -176,10 +176,6 @@ def remote_slurm_executor_serial(
             raise RuntimeError(
                 f"Failed to upload '{path.name}' to '{remote_job_dir}': {result.stderr}"
             )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to upload '{path.name}' to '{remote_job_dir}': {result.stderr}"
-            )
 
     result = subprocess.run(
         ["ssh", ssh_target,
@@ -284,9 +280,10 @@ def remote_bash_executor_batched(
         '> "$PID_FILE"',
     ]
 
+    script_suffix = Path(script_template_path).suffix
     for job in jobs:
         remote_job_dir = Path(remote_work_root) / job.job_dir.name
-        script_text    = (job.job_dir / "run.sh").read_text()
+        script_text    = (job.job_dir / f"run{script_suffix}").read_text()
 
         remote_cmd_lines.append(
             f'cd {shlex.quote(str(remote_job_dir))}; '
@@ -370,12 +367,13 @@ def remote_slurm_executor_batched(
         '> "$PID_FILE"',  
     ]
 
+    script_suffix = Path(script_template_path).suffix
     for job in jobs:
         remote_job_dir = remote_work_root / job.job_dir.name
 
         remote_cmd_lines.append(
             f'cd {shlex.quote(str(remote_job_dir))}; '
-            f'JOB_ID=$(sbatch --parsable run.sbatch); '
+            f'JOB_ID=$(sbatch --parsable {shlex.quote(f"run{script_suffix}")}); '
             f'echo "{job.job_dir.name}:$JOB_ID" >> "$PID_FILE"; '
             f'cd {shlex.quote(str(remote_work_root))}'
         )

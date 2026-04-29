@@ -74,6 +74,7 @@ yarn-error.log*
 *.sqlite
 *.log
 *.expo
+*.RasOrb
 
 # === OS / Misc ===
 .idea/

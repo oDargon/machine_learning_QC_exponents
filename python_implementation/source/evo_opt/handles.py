@@ -76,7 +76,12 @@ class Slurm_Handle(Handle):
             text=True
         )
 
-        state = result.stdout.strip().split()[0]
+        stdout = result.stdout.strip()
+        if not stdout:
+            self._return_code = 1
+            return
+
+        state = stdout.split()[0]
 
         if state == "COMPLETED":
             self._return_code = 0
@@ -167,10 +172,8 @@ class Remote_Slurm_Handle(Handle):
 
         files_to_copy = []
 
-        if self.pullback_policy.name == "MINIMAL":
-            files_to_copy.append(self.output_name + ".log")
-        elif self.pullback_policy.name == "STANDARD":
-            files_to_copy.append(self.output_name + ".log")
+        if self.pullback_policy.name in ("MINIMAL", "STANDARD"):
+            files_to_copy.append(self.output_name)
         elif self.pullback_policy.name == "FULL":
             subprocess.run(
                 [
@@ -183,7 +186,7 @@ class Remote_Slurm_Handle(Handle):
             return
 
         if self.pull_rasorb:
-            files_to_copy.append(self.output_name + ".RasOrb")
+            files_to_copy.append(Path(self.output_name).stem + ".RasOrb")
 
         for fname in files_to_copy:
             subprocess.run(
@@ -284,7 +287,7 @@ class Remote_Bash_Handle(Handle):
             return
 
         if self.pull_rasorb:
-            files_to_copy.append(self.output_name + ".RasOrb")
+            files_to_copy.append(Path(self.output_name).stem + ".RasOrb")
 
         for fname in files_to_copy:
             subprocess.run(
@@ -302,6 +305,10 @@ class Remote_Bash_Handle(Handle):
 
         if len(remote_path.parts) < 4:
             raise RuntimeError(f"Refusing to delete shallow remote path: {self.remote_job_dir}")
+
+        unsafe = {"", "/", ".", "~"}
+        if self.remote_job_dir.strip() in unsafe:
+            raise RuntimeError(f"Refusing to delete unsafe remote path: {self.remote_job_dir}")
 
         result = self._run_ssh(f"rm -rf {shlex.quote(self.remote_job_dir)}")
         if result.returncode != 0:
@@ -403,9 +410,10 @@ class Remote_Bash_Batch_Handle(Handle):
                 )
 
                 if self.pull_rasorb:
+                    rasorb_name = Path(output_name).stem + ".RasOrb"
                     cmd_lines.append(
-                        f'cp {shlex.quote(str(remote_job_dir / (output_name + ".RasOrb")))} '
-                        f'{shlex.quote(str(remote_stage_dir / job_name / (output_name + ".RasOrb")))}'
+                        f'cp {shlex.quote(str(remote_job_dir / rasorb_name))} '
+                        f'{shlex.quote(str(remote_stage_dir / job_name / rasorb_name))}'
                     )
 
             elif self.pullback_policy.name == "FULL":
@@ -439,7 +447,7 @@ class Remote_Bash_Batch_Handle(Handle):
 
             with tarfile.open(local_tar, "r:gz") as tar:
                 tar.extractall(path=extract_root)
-                            
+
             for job_name, local_job_dir in self.local_job_dir_map.items():
                 extracted_job_dir = extract_root / job_name
                 local_job_dir     = Path(local_job_dir)
@@ -473,7 +481,7 @@ class Remote_Bash_Batch_Handle(Handle):
 
     def return_code(self):
         return self._return_code
-    
+
 class Remote_Slurm_Batch_Handle(Handle):
     def __init__(
         self,
@@ -556,9 +564,10 @@ class Remote_Slurm_Batch_Handle(Handle):
                 )
 
                 if self.pull_rasorb:
+                    rasorb_name = Path(output_name).stem + ".RasOrb"
                     cmd_lines.append(
-                        f'cp {shlex.quote(str(remote_job_dir / (output_name + ".RasOrb")))} '
-                        f'{shlex.quote(str(remote_stage_dir / job_name / (output_name + ".RasOrb")))}'
+                        f'cp {shlex.quote(str(remote_job_dir / rasorb_name))} '
+                        f'{shlex.quote(str(remote_stage_dir / job_name / rasorb_name))}'
                     )
 
             elif self.pullback_policy.name == "FULL":

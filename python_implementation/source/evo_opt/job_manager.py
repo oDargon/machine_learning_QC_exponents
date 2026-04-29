@@ -166,6 +166,7 @@ class Job_Manager:
             extract_path  = self.extraction_script,
             exponent_set  = exponent_set,
             name          = name,
+            input_name    = job_name,
             logging       = log_flag,
             rasorbs       = rasorbs,
         )
