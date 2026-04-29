@@ -19,6 +19,10 @@ REQUIRED_CHILD_FIELDS = {
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("run_spec", type=Path)
+    parser.add_argument("--work_dir",       type=Path, default=None, help="Override work_dir from run spec")
+    parser.add_argument("--output_dir",     type=Path, default=None, help="Override output_dir from run spec")
+    parser.add_argument("--submission_dir", type=Path, default=None, help="Base dir for resolving relative input paths in run spec")
+    parser.add_argument("--max_time",       type=float, default=None, help="Maximum run time in seconds; partial results are collected on timeout")
     return parser.parse_args()
 
 def load_yaml(path: Path) -> dict:
@@ -71,7 +75,7 @@ def validate_run_spec(spec: dict) -> None:
 
     if "overwrite" in spec and not isinstance(spec["overwrite"], bool):
         raise TypeError("overwrite must be a boolean.")
-    
+
 
     if "over_ssh" in spec and not isinstance(spec["over_ssh"], bool):
         raise TypeError("over_ssh must be a boolean if provided.")
@@ -99,8 +103,11 @@ def validate_run_spec(spec: dict) -> None:
         if "cleanup_remote" in spec and not isinstance(spec["cleanup_remote"], bool):
             raise TypeError("cleanup_remote must be a boolean if provided.")
 
-def resolve_launcher_dir(spec: dict) -> Path:
-    base = Path(spec["work_dir"]).resolve() if spec.get("work_dir") else Path.cwd().resolve()
+def resolve_launcher_dir(spec: dict, work_dir_override: Path | None = None) -> Path:
+    if work_dir_override is not None:
+        base = work_dir_override.resolve()
+    else:
+        base = Path(spec["work_dir"]).resolve() if spec.get("work_dir") else Path.cwd().resolve()
 
     work_name = spec.get("work_name")
 
@@ -136,11 +143,20 @@ def prepare_launcher_dir(work_dir: Path, overwrite: bool) -> None:
 
     work_dir.mkdir(parents=True, exist_ok=False)
 
-def resolve_output_dir(spec: dict, run_spec_path: Path, work_dir: Path) -> Path:
+def resolve_output_dir(
+    spec: dict,
+    run_spec_path: Path,
+    work_dir: Path,
+    output_dir_override: Path | None = None,
+    submission_dir: Path | None = None,
+) -> Path:
+    if output_dir_override is not None:
+        return (output_dir_override / "output").resolve()
+
     if "output_dir" not in spec or spec["output_dir"] is None:
         return (work_dir / "output").resolve()
 
-    base = run_spec_path.parent
+    base = submission_dir if submission_dir is not None else run_spec_path.parent
     p = Path(spec["output_dir"])
 
     if not p.is_absolute():
@@ -150,9 +166,16 @@ def resolve_output_dir(spec: dict, run_spec_path: Path, work_dir: Path) -> Path:
 
     return p.resolve()
 
-def stage_inputs(work_dir: Path, spec: dict, run_spec_path: Path) -> dict:
+def stage_inputs(
+    work_dir: Path,
+    spec: dict,
+    run_spec_path: Path,
+    submission_dir: Path | None = None,
+) -> dict:
     input_dir = work_dir / "inputs"
     input_dir.mkdir(parents=True, exist_ok=False)
+
+    base = submission_dir if submission_dir is not None else run_spec_path.parent
 
     staged = {}
     for key in [
@@ -162,8 +185,7 @@ def stage_inputs(work_dir: Path, spec: dict, run_spec_path: Path) -> dict:
         "extract_script_path",
         "config_path",
     ]:
-        base = run_spec_path.parent
-        src  = (base / spec[key]).resolve()
+        src = (base / spec[key]).resolve()
 
         if not src.exists():
             raise FileNotFoundError(f"{key} does not exist: {src}")
@@ -226,8 +248,12 @@ def build_child_cmd(spec: dict, staged: dict, work_dir: Path) -> list[str]:
 
     return cmd
 
-def run_child(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, check=False)
+def run_child(cmd: list[str], timeout: float | None = None) -> tuple[int, bool]:
+    try:
+        result = subprocess.run(cmd, check=False, timeout=timeout)
+        return result.returncode, False
+    except subprocess.TimeoutExpired:
+        return -1, True
 
 def extract_outputs(work_dir: Path, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -241,16 +267,13 @@ def extract_outputs(work_dir: Path, output_dir: Path) -> None:
         "initial_culled",
         "best_culled",
     ]
-    # copy files
     for name in files:
         src = work_dir / name
         if src.exists():
             shutil.copy2(src, output_dir / name)
-    # copy directories
     for name in dirs:
         src = work_dir / name
         dst = output_dir / name
-
         if src.exists():
             shutil.copytree(src, dst, dirs_exist_ok=True)
 
@@ -262,38 +285,54 @@ def write_status(work_dir: Path, returncode: int) -> None:
         f.write(f"returncode={returncode}\n")
 
 
-def main(run_spec_path: Path) -> int:
+def main(
+    run_spec_path: Path,
+    work_dir_override: Path | None = None,
+    output_dir_override: Path | None = None,
+    submission_dir: Path | None = None,
+    max_time: float | None = None,
+) -> int:
     try:
         run_spec_path = run_spec_path.resolve()
 
         if not run_spec_path.exists():
             raise FileNotFoundError(f"Run spec file not found: {run_spec_path}")
 
+        if submission_dir is not None:
+            submission_dir = submission_dir.resolve()
+            if not submission_dir.is_dir():
+                raise NotADirectoryError(f"submission_dir does not exist: {submission_dir}")
+
         spec = load_yaml(run_spec_path)
         validate_run_spec(spec)
 
-        overwrite = spec.get("overwrite", False)
-        launcher_dir  = resolve_launcher_dir(spec)
+        overwrite    = spec.get("overwrite", False)
+        launcher_dir = resolve_launcher_dir(spec, work_dir_override=work_dir_override)
 
         prepare_launcher_dir(launcher_dir, overwrite)
-        staged = stage_inputs(launcher_dir, spec, run_spec_path)
+        staged = stage_inputs(launcher_dir, spec, run_spec_path, submission_dir=submission_dir)
         cmd    = build_child_cmd(spec, staged, launcher_dir)
 
         (launcher_dir / "child_command.txt").write_text(" ".join(cmd) + "\n")
-        result     = run_child(cmd)
-        write_status(launcher_dir, result.returncode)
-        output_dir = resolve_output_dir(spec, run_spec_path, launcher_dir)
+        returncode, timed_out = run_child(cmd, timeout=max_time)
+        write_status(launcher_dir, returncode)
+        output_dir = resolve_output_dir(
+            spec, run_spec_path, launcher_dir,
+            output_dir_override=output_dir_override,
+            submission_dir=submission_dir,
+        )
 
         work_dir = launcher_dir / spec.get("run_name") if spec.get("run_name") is not None else launcher_dir / "run"
         extract_outputs(work_dir, output_dir)
 
-        if result.returncode != 0:
-            print(f"Optimization child exited with code {result.returncode}")
+        if timed_out:
+            print("Optimization timed out — partial results collected.")
+        elif returncode != 0:
+            print(f"Optimization child exited with code {returncode}")
         else:
-            print(f"Optimization completed successfully.")
-            # print(f"Work directory: {launcher_dir}")
+            print("Optimization completed successfully.")
 
-        return result.returncode
+        return returncode
 
     except Exception as e:
         print(f"Launcher error: {e}", file=sys.stderr)
@@ -307,7 +346,18 @@ def main(run_spec_path: Path) -> int:
 
 def cli() -> int:
     args = parse_args()
-    return main(args.run_spec)
+
+    run_spec = args.run_spec
+    if not run_spec.is_absolute() and args.submission_dir is not None:
+        run_spec = args.submission_dir / run_spec
+
+    return main(
+        run_spec,
+        work_dir_override   = args.work_dir,
+        output_dir_override = args.output_dir,
+        submission_dir      = args.submission_dir,
+        max_time            = args.max_time,
+    )
 
 if __name__ == "__main__":
     raise SystemExit(cli())

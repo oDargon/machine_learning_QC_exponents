@@ -288,13 +288,14 @@ class Remote_Bash_Handle(Handle):
 
         for fname in files_to_copy:
             subprocess.run(
-            [
-                "scp",
-                "-q",  # quiet
-                f"{self.ssh_target}:{self.remote_job_dir}/{fname}",
-                str(self.local_job_dir / fname)
-            ]
-        )
+                [
+                    "scp",
+                    "-q",
+                    f"{self.ssh_target}:{self.remote_job_dir}/{fname}",
+                    str(self.local_job_dir / fname),
+                ],
+                check=False,
+            )
 
     def _cleanup_remote_dir(self):
         remote_path = Path(self.remote_job_dir)

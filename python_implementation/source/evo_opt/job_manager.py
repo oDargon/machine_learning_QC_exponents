@@ -145,7 +145,7 @@ class Job_Manager:
         if self.remote_work_root is None:
             raise ValueError("When using a remote executor, remote_work_root must be provided.")
 
-    def add_job(self, exponent_set, template_path, *, name: Optional[str] = None, this_log: bool = False):
+    def add_job(self, exponent_set, template_path, *, name: Optional[str] = None, this_log: bool = False, rasorbs=None):
 
         log_flag = True if (this_log or self.full_logging) else False
 
@@ -166,7 +166,8 @@ class Job_Manager:
             extract_path  = self.extraction_script,
             exponent_set  = exponent_set,
             name          = name,
-            logging       = log_flag   
+            logging       = log_flag,
+            rasorbs       = rasorbs,
         )
 
         job.prepare_job()
@@ -296,16 +297,6 @@ class Job_Manager:
 
             time.sleep(poll_interval)
 
-        failed_jobs = [job for job in self.jobs if job.status == Job_Status.FAILED]
-        if failed_jobs:
-            if self.manager_logging:
-                print(f"[JobManager] {len(failed_jobs)} job(s) failed.")
-        else:
-            if self.manager_logging:
-                print("[JobManager] All jobs completed successfully.")
-
-        self.all_jobs_ran = True
-    
     def run_all_jobs(self, max_jobs: int = 1, *, poll_interval_override: float | None = None):
 
         if max_jobs < 1:

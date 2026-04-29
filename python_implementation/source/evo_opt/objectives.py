@@ -150,7 +150,7 @@ class Ground_Energy_Objective(Objective):
         manager.run_all_jobs(threads)
 
         for job in manager.jobs:
-            energies.append(job.exponent_set.energy or 1e6)
+            energies.append(job.exponent_set.energy if job.exponent_set.energy is not None else 1e6)
 
         manager.collect_successful_results()
 

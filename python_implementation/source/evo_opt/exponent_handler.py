@@ -479,19 +479,16 @@ class Exponent_Set:
     def add_exponent_uncontracted(self, l: int, value: float) -> None:
         if l < 0 or l >= len(self.exponents):
             raise IndexError(f"Invalid shell index l={l}")
-        
-        # Update lengths
-        self.lengths[l]  += 1
-        self.exponents[l] = array(list(self.exponents[l]) + [value], dtype=float64)
 
         if self.contracted:
             raise ValueError("Exponent set is contracted; cannot add exponent without updating contraction matrix. Use add_exponent_contracted() instead.")
-        
-        else:
-            # If not contracted, we need to maintain the invariant that the contraction matrix is identity
-            n = self.lengths[l]
-            self.n_contracted[l] = n
-            self.contractions[l] = eye(n, dtype=float64)
+
+        self.lengths[l]  += 1
+        self.exponents[l] = array(list(self.exponents[l]) + [value], dtype=float64)
+
+        n = self.lengths[l]
+        self.n_contracted[l] = n
+        self.contractions[l] = eye(n, dtype=float64)
 
     def change_exponent_uncontracted(self, l: int, q: int, value: float) -> None:
         if l < 0 or l >= len(self.exponents):
@@ -500,7 +497,7 @@ class Exponent_Set:
             raise IndexError(f"Invalid exponent index q={q} for shell l={l}")
         
         if self.contracted:
-            raise ValueError("Exponent set is contracted; cannot change exponent with this method. Use change_exponent_uncontracted() instead.")
+            raise ValueError("Exponent set is contracted; cannot change exponent with this method. Use change_exponent_contracted() instead.")
         
         self.exponents[l][q] = value
 #/TO DO: FIX THE LACKING CHECK FOR ORDER/REMOVE UNNECESSARY METHODS
