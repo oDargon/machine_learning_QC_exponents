@@ -53,7 +53,7 @@ def format_basis_block(exponent_set: Exponent_Set) -> str:
         exps = " ".join(f"{v:.10f}" for v in exponent_set.exponents[i])
         cont = "\n".join(
             " ".join(f"{value:.10f}" for value in row)
-            for row in exponent_set.contractions[i]
+            for row in exponent_set.contractions[i].T
         )
 
         parts.append(f"{nums}\n{exps}\n{cont}")
@@ -75,7 +75,7 @@ def make_replacer(exponent_set: Exponent_Set, job_id: Optional[str] = None):
                 matrix = exponent_set.contractions[index]
                 return "\n".join(
                     " ".join(f"{value:.10f}" for value in row)
-                    for row in matrix
+                    for row in matrix.T
                 )
             else:
                 raise ValueError(f"Unknown placeholder kind: {kind}")
