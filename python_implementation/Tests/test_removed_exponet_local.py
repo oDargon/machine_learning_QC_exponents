@@ -16,7 +16,7 @@ removed_exps = []
 
 for i in range(len(exp.exponents)):
     for j in range(exp.lengths[i]):
-        exp_copy = exp.copy_without_energy()
+        exp_copy = exp.copy(no_energy=True)
         exp_copy.remove_exponent_uncontracted(i, j)
         removed_exps.append(exp_copy)
 
@@ -38,7 +38,7 @@ for i in range(len(removed_exps)):
         for q in range(removed_exps[i].lengths[l]):
             for step in range(n_steps):
                 factor = 1 - variation + (2 * variation / (n_steps - 1)) * step
-                exp_copy = removed_exps[i].copy_without_energy()
+                exp_copy = removed_exps[i].copy(no_energy=True)
                 exp_copy.exponents[l][q] *= factor
                 M.add_job(exp_copy, template_dir, name=f"Removed_exp_{l}_{q}_{step}")
 

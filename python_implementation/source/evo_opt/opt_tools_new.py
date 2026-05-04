@@ -15,7 +15,7 @@ def local_exponent_removal_analysis(in_exp: Exponent_Set, in_energy: float64, ob
     i = 0
     for l in range(len(in_exp.exponents)):
         for q in range(len(in_exp.exponents[l])):
-            new_exp = in_exp.copy_without_energy() 
+            new_exp = in_exp.copy(no_energy=True) 
             exponents.append(new_exp)
             exponents[i].remove_exponent_uncontracted( l, q ) 
             labels.append( (l, q) )
@@ -44,7 +44,7 @@ def local_exponent_removal_analysis(in_exp: Exponent_Set, in_energy: float64, ob
         print("-" * 40)
         print(f"l={l_best}  q={q_best}   ΔE = {deltas[best_idx]: .6e}")
 
-    return energies[best_idx], exponents[best_idx].copy_without_energy(), best_idx, labels[best_idx]
+    return energies[best_idx], exponents[best_idx].copy(no_energy=True), best_idx, labels[best_idx]
 
 def least_important_indices(cov: ndarray):
 

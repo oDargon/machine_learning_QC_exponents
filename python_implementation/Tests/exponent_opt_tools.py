@@ -15,13 +15,13 @@ def local_exponent_removal_analysis(
 ):
 
     # Reference job
-    ref_exp = exponent_set.copy_without_energy()
+    ref_exp = exponent_set.copy(no_energy=True)
     job_manager.add_job(ref_exp, template_path, name="reference")
 
     # Removal jobs
     for l in range(len(exponent_set.exponents)):
         for q in range(exponent_set.lengths[l]):
-            exp_copy = exponent_set.copy_without_energy()
+            exp_copy = exponent_set.copy(no_energy=True)
             exp_copy.remove_exponent_uncontracted(l, q)
             job_manager.add_job(exp_copy, template_path, name=f"Removed_{l}_{q}")
 
@@ -84,7 +84,7 @@ def local_exponent_removal_analysis_mixed(
 ):
 
     # Reference job
-    ref_exp = exponent_set.copy_without_energy()
+    ref_exp = exponent_set.copy(no_energy=True)
     job_manager.add_job(ref_exp, template_paths[0], name="reference_g")
     job_manager.add_job(ref_exp, template_paths[1], name="reference_a")
     job_manager.add_job(ref_exp, template_paths[2], name="reference_c")
@@ -93,7 +93,7 @@ def local_exponent_removal_analysis_mixed(
     for l in range(len(exponent_set.exponents)):
         for q in range(exponent_set.lengths[l]):
             for c in range(3):
-                exp_copy = exponent_set.copy_without_energy()
+                exp_copy = exponent_set.copy(no_energy=True)
                 exp_copy.remove_exponent_uncontracted(l, q)
                 job_manager.add_job(exp_copy, template_paths[c], name=f"Removed_{l}_{q}_{c}")
 
@@ -172,7 +172,7 @@ def local_exponent_sensitivity_analysis(
     print_results:bool=True
 ):
     # Reference
-    ref_exp = exponent_set.copy_without_energy()
+    ref_exp = exponent_set.copy(no_energy=True)
     job_manager.add_job(ref_exp, template_path, name="reference")
 
     for l in range(len(exponent_set.exponents)):
@@ -181,12 +181,12 @@ def local_exponent_sensitivity_analysis(
             h     = x * alpha
 
             # Minus
-            exp_minus = exponent_set.copy_without_energy()
+            exp_minus = exponent_set.copy(no_energy=True)
             exp_minus.exponents[l][q] = alpha - h
             job_manager.add_job(exp_minus, template_path, name=f"Minus_{l}_{q}")
 
             # Plus
-            exp_plus = exponent_set.copy_without_energy()
+            exp_plus = exponent_set.copy(no_energy=True)
             exp_plus.exponents[l][q] = alpha + h
             job_manager.add_job(exp_plus, template_path, name=f"Plus_{l}_{q}")
 

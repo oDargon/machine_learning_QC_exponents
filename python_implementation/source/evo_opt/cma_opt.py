@@ -131,7 +131,7 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
     log_file             = work_dir / "cma.log"
     log_f                = open(log_file, "a")  # always log to file
     best_energy_overall  = start_energy
-    best_exp_overall     = start_exp.copy_without_energy()
+    best_exp_overall     = start_exp.copy(no_energy=True)
     recent_best_energies = []
 
     for gen in range(max_generations):
@@ -140,7 +140,7 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
         population  = es.ask()
         exp_objects = []
         for vec in population:
-            new_exp = start_exp.copy_without_energy()
+            new_exp = start_exp.copy(no_energy=True)
             new_exp.update_exponent_uncontracted_from_flat_same_shape(exp(vec))
             exp_objects.append(new_exp)
 
@@ -153,9 +153,9 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
 
         if best_energy < best_energy_overall:
             best_energy_overall = best_energy
-            best_exp_overall    = exp_objects[best_idx].copy_without_energy()
+            best_exp_overall    = exp_objects[best_idx].copy(no_energy=True)
 
-        best_exp_gen = exp_objects[best_idx].copy_without_energy()
+        best_exp_gen = exp_objects[best_idx].copy(no_energy=True)
         best_exp_gen.save(best_dir, f"gen_{gen:03d}")
 
         es.tell(population, energies)
@@ -277,7 +277,7 @@ def cma_culling(
     run_logs_dir.mkdir(exist_ok=True)
     run_csvs_dir.mkdir(exist_ok=True)
 
-    current_exp  = start_exp.copy_without_energy()
+    current_exp  = start_exp.copy(no_energy=True)
     if start_energy is None:
         start_energy = evaluate_initial_energy(start_exp, objective, work_dir, threads=threads)
     last_energy  = start_energy

@@ -19,12 +19,12 @@ M = Job_Manager(
     overwrite_existing=True
 )
 
-exp_copy = exp.copy_without_energy()
+exp_copy = exp.copy(no_energy=True)
 M.add_job(exp_copy, template_dir)
 
 for l in range(len(exp.exponents)):
     for q in range(exp.lengths[l]):
-        exp_copy = exp.copy_without_energy()
+        exp_copy = exp.copy(no_energy=True)
         exp_copy.remove_exponent_uncontracted(l, q)
         M.add_job(exp_copy, template_dir, name=f"Removed_exp_{l}_{q}")
 

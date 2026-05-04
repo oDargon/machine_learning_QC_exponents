@@ -1,6 +1,7 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import shutil
+from numpy import array, float64, ndarray
 from .exponent_handler import Exponent_Set
 from .parsing import make_input_from_template
 from .common import Job_Status
@@ -38,7 +39,7 @@ class Molcas_Job:
         self.handle         = None #Handle used by the manager to asses job completion
 
         # Freeze exponent_set inside job
-        self.exponent_set = exponent_set.copy_without_energy()
+        self.exponent_set = exponent_set.copy(no_energy=True)
         self.overwrite    = overwrite
 
         # Runtime state
@@ -159,8 +160,16 @@ class Molcas_Job:
         self.results = {"energy": energy}
         self.status  = Job_Status.COMPLETED
 
+        # Check for ANO file and extract resulting contractions if present
+        resulting_contraction = None
+        ano_files = [f for f in self.job_dir.iterdir() if f.suffix.upper() == ".ANO"]
+        if ano_files:
+            resulting_contraction = self._extract_ano_contractions(ano_files[0])
+            if self.logging:
+                print(f"[MolcasJob] ANO file found for job '{self.job_id}': {ano_files[0].name}")
+
         # Update exponent set
-        self.exponent_set.assign_results(energy=energy)
+        self.exponent_set.assign_results(energy=energy, resulting_contraction=resulting_contraction)
         self.save_exponent_file()
 
         if self.logging:
@@ -293,6 +302,57 @@ class Molcas_Job:
             if self.logging:
                 print(f"[MolcasJob] Invalid extractor output for job '{self.job_id}': {output}")
             return None
+
+    def _extract_ano_contractions(self, ano_file: Path) -> Optional[List[ndarray]]:
+        with open(ano_file) as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+
+        shells = []
+        i = 0
+        while i < len(lines):
+            parts = lines[i].split()
+            if len(parts) != 2:
+                if self.logging:
+                    print(f"[MolcasJob] Unexpected ANO header line: '{lines[i]}'")
+                return None
+            n_prim, n_cont = int(parts[0]), int(parts[1])
+            i += 1
+
+            rows = []
+            for row_idx in range(n_prim):
+                if i >= len(lines):
+                    if self.logging:
+                        print(f"[MolcasJob] Unexpected end of ANO file in shell {len(shells)}, row {row_idx}")
+                    return None
+                vals = list(map(float, lines[i].split()))
+                if len(vals) != n_cont:
+                    if self.logging:
+                        print(f"[MolcasJob] ANO row width mismatch in shell {len(shells)}: expected {n_cont}, got {len(vals)}")
+                    return None
+                rows.append(vals)
+                i += 1
+
+            # ANO stores (n_prim x n_cont); our convention is (n_cont x n_prim)
+            shells.append(array(rows, dtype=float64).T)
+
+        if len(shells) != len(self.exponent_set.exponents):
+            if self.logging:
+                print(
+                    f"[MolcasJob] ANO shell count ({len(shells)}) does not match "
+                    f"exponent shells ({len(self.exponent_set.exponents)}) for job '{self.job_id}'"
+                )
+            return None
+
+        for l, (mat, n_prim_expected) in enumerate(zip(shells, self.exponent_set.lengths)):
+            if mat.shape[1] != n_prim_expected:
+                if self.logging:
+                    print(
+                        f"[MolcasJob] ANO shell {l} primitive count mismatch: "
+                        f"got {mat.shape[1]}, expected {n_prim_expected}"
+                    )
+                return None
+
+        return shells
 
     def mark_submitted(self):
 

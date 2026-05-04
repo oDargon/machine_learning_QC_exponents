@@ -10,10 +10,12 @@ class Exponent_Set:
         atom_name: Optional[str]                                          = None,
         exponents: Optional[List[Sequence[float] | ndarray]]              = None,
         contractions: Optional[List[Sequence[Sequence[float]] | ndarray]] = None,
+        contracted_shells: Optional[List[bool]]                           = None,
         method: Optional[str]                                             = None,
         *,
-        contracted: Optional[bool]                                        = None,
-        energy: Optional[float]                                           = None
+        contracted: Optional[bool]                                                  = None,
+        energy: Optional[float]                                                     = None,
+        resulting_contraction: Optional[List[Sequence[Sequence[float]] | ndarray]]  = None
     ):
         # ---- metadata ----
         self.label: Optional[int] = label
@@ -21,16 +23,20 @@ class Exponent_Set:
         self.method: str          = method if method is not None else "Unknown"
 
         # ---- raw inputs ----
-        self._raw_exponents    = exponents
-        self._raw_contractions = contractions
-        self._contracted_flag  = contracted
+        self._raw_exponents              = exponents
+        self._raw_contractions           = contractions
+        self._raw_contracted_shells      = contracted_shells
+        self._contracted_flag            = contracted
+        self._raw_resulting_contraction  = resulting_contraction
 
         # ---- core data (declared, filled later) ----
-        self.exponents: List[ndarray]    = []
-        self.contractions: List[ndarray] = []
-        self.lengths: List[int]          = []
-        self.n_contracted: List[int]     = []
-        self.contracted: bool            = False
+        self.exponents: List[ndarray]                   = []
+        self.contractions: List[ndarray]                = []
+        self.contracted_shells: List[bool]              = []
+        self.lengths: List[int]                         = []
+        self.n_contracted: List[int]                    = []
+        self.contracted: bool                           = False
+        self.resulting_contraction: Optional[List[ndarray]] = None
 
         # ---- simulation state ----
         self.energy: Optional[float] = energy if energy is not None else None
@@ -45,8 +51,10 @@ class Exponent_Set:
     def _initialize(self) -> None:
         self.exponents.clear()
         self.contractions.clear()
+        self.contracted_shells.clear()
         self.lengths.clear()
         self.n_contracted.clear()
+        self.resulting_contraction = None
 
         # normalize exponents
         if self._raw_exponents is not None:
@@ -69,22 +77,33 @@ class Exponent_Set:
                 n = exp.shape[0]
                 self.contractions.append(eye(n, dtype=float64))
 
-        # infer contraction status from matrices
-        has_nontrivial_contraction = any(
-            not self._is_identity(cont)
-            for cont in self.contractions
-        )
-
-        # resolve contracted flag (user overrides inference)
-        if self._contracted_flag is not None:
-            self.contracted = self._contracted_flag
+        # resolve per-shell contraction activation
+        if self._raw_contracted_shells is not None:
+            cs = list(self._raw_contracted_shells)
+            if len(cs) != len(self.exponents):
+                raise ValueError("contracted_shells length must match number of shells")
+            self.contracted_shells = [bool(v) for v in cs]
+        elif self._contracted_flag is not None:
+            self.contracted_shells = [self._contracted_flag] * len(self.exponents)
         else:
-            self.contracted = has_nontrivial_contraction
+            self.contracted_shells = [not self._is_identity(cont) for cont in self.contractions]
+
+        self.contracted = any(self.contracted_shells)
 
         # derived dimensions
         for exp, cont in zip(self.exponents, self.contractions):
             self.lengths.append(exp.shape[0])
-            self.n_contracted.append(cont.shape[1])
+            self.n_contracted.append(cont.shape[0])
+
+        if self._raw_resulting_contraction is not None:
+            if len(self._raw_resulting_contraction) != len(self.exponents):
+                raise ValueError("Number of resulting_contraction shells must match exponent shells")
+            res_conts = []
+            for i, cont in enumerate(self._raw_resulting_contraction):
+                cont_arr = array(cont, dtype=float64)
+                self._validate_contractions(cont_arr, self.exponents[i], i)
+                res_conts.append(cont_arr)
+            self.resulting_contraction = res_conts
 
         self._ensure_descending_all()
 
@@ -103,15 +122,15 @@ class Exponent_Set:
     def _validate_contractions(cont: ndarray, exp: ndarray, idx: int) -> None:
         if cont.ndim != 2:
             raise ValueError(f"contractions[{idx}] must be 2D")
-        if cont.shape[0] != exp.shape[0]:
+        if cont.shape[1] != exp.shape[0]:
             raise ValueError(
-                f"contractions[{idx}] rows must match number of exponents"
+                f"contractions[{idx}] columns ({cont.shape[1]}) must match number of primitives ({exp.shape[0]})"
             )
 
     def _ensure_descending_all(self) -> None:
         """
         Ensure all shells have exponents sorted descending.
-        If any shell is not sorted, reorder exponents and, if contracted, the contraction matrix rows.
+        If any shell is not sorted, reorder exponents and, if contracted, the contraction matrix columns.
         """
         for l, exp in enumerate(self.exponents):
             if exp.size <= 1:
@@ -127,35 +146,76 @@ class Exponent_Set:
             # Reorder exponents
             self.exponents[l] = exp[order]
 
-            # Reorder contraction matrix rows only if contracted
-            if self.contracted:
-                self.contractions[l] = self.contractions[l][order, :]
+            # Reorder contraction matrix columns (primitive index) whenever the matrix
+            # is non-trivial, regardless of per-shell activation — an inactive shell may
+            # still have stored coefficients that must stay aligned with exponent ordering
+            if not self._is_identity(self.contractions[l]):
+                self.contractions[l] = self.contractions[l][:, order]
+
+            if self.resulting_contraction is not None:
+                self.resulting_contraction[l] = self.resulting_contraction[l][:, order]
 
     # ---------------- core behavior ----------------
 
-    def copy_without_energy(self) -> "Exponent_Set":
-        exponents_copy = [exp.copy() for exp in self.exponents]
-        contractions_copy = [cont.copy() for cont in self.contractions]
+    def copy(
+        self,
+        *,
+        no_energy: bool             = False,
+        no_contractions: bool       = False,
+        no_contracted_shells: bool  = False,
+    ) -> "Exponent_Set":
+        exponents_copy    = [exp.copy() for exp in self.exponents]
+        contractions_copy = None if no_contractions else [cont.copy() for cont in self.contractions]
+        # contracted_shells can only be meaningful when contractions are present
+        shells_copy       = None if (no_contracted_shells or no_contractions) else list(self.contracted_shells)
+        res_cont_copy     = (
+            [cont.copy() for cont in self.resulting_contraction]
+            if self.resulting_contraction is not None else None
+        )
 
         new = Exponent_Set(
             label=self.label,
             atom_name=self.atom_name,
             exponents=exponents_copy,
             contractions=contractions_copy,
+            contracted_shells=shells_copy,
             method=self.method,
-            contracted=self.contracted,
+            energy=None if no_energy else self.energy,
+            resulting_contraction=res_cont_copy,
         )
 
         new.is_copy = True
-        new.used = False
-        new.energy = None
+        new.used    = False
 
         return new
 
 
-    def assign_results(self, *, energy: Optional[float] = None) -> None:
+    def assign_results(
+        self,
+        *,
+        energy: Optional[float]          = None,
+        resulting_contraction: Optional[List[ndarray]] = None,
+    ) -> None:
         if energy is not None:
             self.energy = float(energy)
+        if resulting_contraction is not None:
+            if len(resulting_contraction) != len(self.exponents):
+                raise ValueError(
+                    f"Number of result contraction matrices ({len(resulting_contraction)}) must match "
+                    f"number of shells ({len(self.exponents)})"
+                )
+            new_conts = []
+            for i, cont in enumerate(resulting_contraction):
+                cont_arr = array(cont, dtype=float64)
+                if cont_arr.ndim != 2:
+                    raise ValueError(f"resulting_contraction[{i}] must be 2D")
+                if cont_arr.shape[1] != self.lengths[i]:
+                    raise ValueError(
+                        f"resulting_contraction[{i}] has {cont_arr.shape[1]} columns but "
+                        f"shell {i} has {self.lengths[i]} primitives"
+                    )
+                new_conts.append(cont_arr)
+            self.resulting_contraction = new_conts
         self.used = True
 
     # ---------------- presentation ----------------
@@ -169,7 +229,7 @@ class Exponent_Set:
         lines.append( f"method:\n{self.method}")
         lines.append(
             f"  (l_max)={l_max}, "
-            f"contracted={self.contracted}, copy={self.is_copy}, used={self.used}"
+            f"contracted={self.contracted}, contracted_shells={self.contracted_shells}, copy={self.is_copy}, used={self.used}"
         )
 
         for l, exp in enumerate(self.exponents):
@@ -179,7 +239,7 @@ class Exponent_Set:
                 + " ".join(f"{v:.6f}" for v in exp)
             )
 
-            if self.contracted:
+            if self.contracted_shells[l]:
                 cont = self.contractions[l]
                 lines.append("    contraction coefficients:")
                 for row in cont:
@@ -228,17 +288,25 @@ class Exponent_Set:
             raise FileExistsError(f"File already exists: {path}")
 
         # ---------- defaults ----------
-        atom       = self.atom_name or "X"
-        method     = self.method or "Unknown"
-        energy     = "NONE" if self.energy is None else f"{self.energy:.16e}"
-        contracted = self.contracted
+        atom   = self.atom_name or "X"
+        method = self.method or "Unknown"
+        energy = "NONE" if self.energy is None else f"{self.energy:.16e}"
+
+        # Write a CONTRACTION block whenever any shell is active OR has a non-trivial
+        # matrix stored, so that CONTRACTED: TRUE always co-occurs with the block.
+        needs_contraction = self.contracted or any(
+            not self._is_identity(cont) for cont in self.contractions
+        )
 
         # ---------- write ----------
         with path.open("w") as f:
             # metadata
             f.write(f"ATOM: {atom}\n")
             f.write(f"ENERGY: {energy}\n")
-            f.write(f"CONTRACTED: {'TRUE' if contracted else 'FALSE'}\n")
+            f.write(f"CONTRACTED: {'TRUE' if needs_contraction else 'FALSE'}\n")
+            if needs_contraction:
+                shells_str = " ".join("1" if s else "0" for s in self.contracted_shells)
+                f.write(f"CONTRACTED_SHELLS: {shells_str}\n")
 
             # method
             if self.method != "Unknown":
@@ -256,18 +324,30 @@ class Exponent_Set:
 
             f.write("</EXPONENTS>")
 
-            # contractions (optional)
-            if contracted:
+            # contractions — written whenever any shell is active or has a stored
+            # non-trivial matrix, keeping CONTRACTED: TRUE always paired with this block
+            if needs_contraction:
                 f.write("\n<CONTRACTION>\n")
                 f.write(f"{len(self.contractions)}\n")
 
                 for cont in self.contractions:
-                    n_cont = cont.shape[1]
+                    n_cont = cont.shape[0]  # rows = MOs
                     f.write(f"{n_cont}\n")
-                    for row in cont:
+                    for row in cont:        # each row = one MO over all primitives
                         f.write(" ".join(f"{v:.16e}" for v in row) + "\n")
 
                 f.write("</CONTRACTION>\n")
+
+            if self.resulting_contraction is not None:
+                f.write("\n<RES_CONTRACTION>\n")
+                f.write(f"{len(self.resulting_contraction)}\n")
+
+                for cont in self.resulting_contraction:
+                    f.write(f"{cont.shape[0]}\n")
+                    for row in cont:
+                        f.write(" ".join(f"{v:.16e}" for v in row) + "\n")
+
+                f.write("</RES_CONTRACTION>\n")
 
         return path
     
@@ -294,11 +374,13 @@ class Exponent_Set:
         energy     = None
         contracted = None
 
-        exponents_raw     = []
-        contractions_raw  = []
-        found_exponents   = False
-        found_contraction = False
-        found_method      = False
+        exponents_raw              = []
+        contractions_raw           = []
+        contracted_shells_raw      = None
+        resulting_contraction_raw  = None
+        found_exponents            = False
+        found_contraction          = False
+        found_method               = False
 
         # ---------------- read ----------------
         with open(path, "r") as f:
@@ -319,6 +401,20 @@ class Exponent_Set:
             if line.startswith("ENERGY:"):
                 val = line.split(":", 1)[1].strip()
                 energy = None if val == "NONE" else float(val)
+                i += 1
+                continue
+
+            if line.startswith("CONTRACTED_SHELLS:"):
+                vals = line.split(":", 1)[1].strip().split()
+                contracted_shells_raw = []
+                for v in vals:
+                    v_up = v.upper()
+                    if v_up in ("1", "TRUE"):
+                        contracted_shells_raw.append(True)
+                    elif v_up in ("0", "FALSE"):
+                        contracted_shells_raw.append(False)
+                    else:
+                        raise ValueError(f"CONTRACTED_SHELLS values must be 1/0 (or TRUE/FALSE), got '{v}'")
                 i += 1
                 continue
 
@@ -402,12 +498,13 @@ class Exponent_Set:
                     i += 1
 
                     rows = []
-                    for q in range(len(exponents_raw[l])):
+                    n_prim = len(exponents_raw[l])
+                    for q in range(n_cont):  # n_cont rows, each = one MO over all primitives
                         if i >= n:
                             raise ValueError(f"Unexpected end of file while reading contraction row {q} for shell {l}")
                         row = list(map(float, lines[i].split()))
-                        if len(row) != n_cont:
-                            raise ValueError(f"Contraction row size mismatch in shell {l}, row {q}")
+                        if len(row) != n_prim:
+                            raise ValueError(f"Contraction row size mismatch in shell {l}, row {q}: expected {n_prim} primitives, got {len(row)}")
                         rows.append(row)
                         i += 1
 
@@ -415,6 +512,46 @@ class Exponent_Set:
 
                 if i >= n or lines[i] != "</CONTRACTION>":
                     raise ValueError("Missing </CONTRACTION> block")
+                i += 1
+                continue
+
+
+            # ---------- RES_CONTRACTION ----------
+            if line == "<RES_CONTRACTION>":
+                i += 1
+
+                if i >= n:
+                    raise ValueError("Unexpected end of file while reading <RES_CONTRACTION> block header")
+                n_shells = int(lines[i])
+                i += 1
+
+                if n_shells != len(exponents_raw):
+                    raise ValueError(
+                        "Number of RES_CONTRACTION shells does not match number of exponent shells"
+                    )
+
+                resulting_contraction_raw = []
+                for l in range(n_shells):
+                    if i >= n:
+                        raise ValueError(f"Unexpected end of file while reading number of contracted functions for RES_CONTRACTION shell {l}")
+                    n_cont = int(lines[i])
+                    i += 1
+
+                    rows = []
+                    n_prim = len(exponents_raw[l])
+                    for q in range(n_cont):
+                        if i >= n:
+                            raise ValueError(f"Unexpected end of file while reading RES_CONTRACTION row {q} for shell {l}")
+                        row = list(map(float, lines[i].split()))
+                        if len(row) != n_prim:
+                            raise ValueError(f"RES_CONTRACTION row size mismatch in shell {l}, row {q}: expected {n_prim} primitives, got {len(row)}")
+                        rows.append(row)
+                        i += 1
+
+                    resulting_contraction_raw.append(rows)
+
+                if i >= n or lines[i] != "</RES_CONTRACTION>":
+                    raise ValueError("Missing </RES_CONTRACTION> block")
                 i += 1
                 continue
 
@@ -431,7 +568,7 @@ class Exponent_Set:
                 "CONTRACTED is TRUE but no <CONTRACTION> block found"
             )
 
-        if contracted is False:
+        if not found_contraction:
             contractions_raw = None
 
         if contracted is None:
@@ -446,9 +583,11 @@ class Exponent_Set:
             atom_name=atom,
             exponents=exponents_raw,
             contractions=contractions_raw,
+            contracted_shells=contracted_shells_raw,
             method=method,
             energy=energy,
             contracted=contracted,
+            resulting_contraction=resulting_contraction_raw,
         )
 
     @classmethod
@@ -475,6 +614,7 @@ class Exponent_Set:
         n = self.lengths[l]
         self.n_contracted[l] = n
         self.contractions[l] = eye(n, dtype=float64)
+        self.resulting_contraction = None
 
     def add_exponent_uncontracted(self, l: int, value: float) -> None:
         if l < 0 or l >= len(self.exponents):
@@ -489,6 +629,7 @@ class Exponent_Set:
         n = self.lengths[l]
         self.n_contracted[l] = n
         self.contractions[l] = eye(n, dtype=float64)
+        self.resulting_contraction = None
 
     def change_exponent_uncontracted(self, l: int, q: int, value: float) -> None:
         if l < 0 or l >= len(self.exponents):
@@ -523,3 +664,44 @@ class Exponent_Set:
 
     def same_shape_as(self, other_set: "Exponent_Set") -> bool:
         return self.lengths == other_set.lengths and self.n_contracted == other_set.n_contracted and self.contracted == other_set.contracted
+    
+
+    # ---------------- contraction helpers ----------------
+
+    def add_contraction_shells(self, contracted_shells: List[bool]) -> None:
+        if len(contracted_shells) != len(self.exponents):
+            raise ValueError(
+                f"contracted_shells length ({len(contracted_shells)}) must match "
+                f"number of shells ({len(self.exponents)})"
+            )
+        self.contracted_shells = [bool(v) for v in contracted_shells]
+        self.contracted        = any(self.contracted_shells)
+
+    def change_contraction(
+        self,
+        contractions: List[ndarray],
+        contracted_shells: Optional[List[bool]] = None,
+    ) -> None:
+        if len(contractions) != len(self.exponents):
+            raise ValueError(
+                f"Number of contraction matrices ({len(contractions)}) must match "
+                f"number of shells ({len(self.exponents)})"
+            )
+        new_conts = []
+        for i, cont in enumerate(contractions):
+            cont_arr = array(cont, dtype=float64)
+            if cont_arr.ndim != 2:
+                raise ValueError(f"contractions[{i}] must be 2D")
+            if cont_arr.shape[1] != self.lengths[i]:
+                raise ValueError(
+                    f"contractions[{i}] has {cont_arr.shape[1]} columns but shell {i} "
+                    f"has {self.lengths[i]} primitives"
+                )
+            new_conts.append(cont_arr)
+
+        self.contractions = new_conts
+        self.n_contracted = [c.shape[0] for c in self.contractions]
+        self.add_contraction_shells(
+            contracted_shells if contracted_shells is not None
+            else [True] * len(self.exponents)
+        )

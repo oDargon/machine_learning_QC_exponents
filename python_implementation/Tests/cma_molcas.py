@@ -28,7 +28,7 @@ def evaluate_population_objective(
     energies = []
 
     for i in range(len(exponent_vectors)):
-        new_exp = base_exp.copy_without_energy()
+        new_exp = base_exp.copy(no_energy=True)
 
         idx = 0
         for l in range(len(exponent_shape)):
@@ -122,7 +122,7 @@ def cma_fixed_exponent_count(
         best_vector  = population[best_idx]
 
         # reconstruct Exponent_Set
-        best_exp_gen = start_exp.copy_without_energy()
+        best_exp_gen = start_exp.copy(no_energy=True)
         idx = 0
         for l, n in enumerate(exponent_shape):
             best_exp_gen.exponents[l] = exp(best_vector[idx:idx+n]) #exp since we work in log space
@@ -154,7 +154,7 @@ def cma_fixed_exponent_count(
 
     # Convert best vector back into Exponent_Set
     best_vector = es.result.xbest
-    best_exp    = start_exp.copy_without_energy()
+    best_exp    = start_exp.copy(no_energy=True)
 
     idx = 0
     for l, n in enumerate(exponent_shape):
@@ -208,7 +208,7 @@ def cma_culling(
     best_culled_dir.mkdir(exist_ok=True)
 
     
-    current_exp  = start_exp.copy_without_energy()
+    current_exp  = start_exp.copy(no_energy=True)
     start_energy = start_exp.energy
     last_energy  = start_energy
 
