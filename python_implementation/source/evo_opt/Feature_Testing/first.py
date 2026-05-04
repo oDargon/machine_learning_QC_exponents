@@ -1,23 +1,25 @@
 import sys
 from pathlib import Path
 
-BASE_DIR = Path.cwd()
-sys.path.insert(0, str(BASE_DIR))
+WORK_DIR   = Path(sys.argv[1])
+SUBMIT_DIR = Path(sys.argv[2])
+sys.path.insert(0, str(SUBMIT_DIR))
 
 from evo_opt.exponent_handler import *
 from evo_opt.molcas_handler import *
 from evo_opt.job_manager import *
 from evo_opt.common import Executor_Type
 
-exp_path     = BASE_DIR / "exp.expo"
-template_dir = BASE_DIR / "template.inp"
-submit_scr   = BASE_DIR / "run.sh"
-extract_scr  = BASE_DIR / "extract.sh"
-dest_dir     = BASE_DIR / "RUN1"
+exp_path     = SUBMIT_DIR / "exp.expo"
+template_dir = SUBMIT_DIR / "template.inp"
+submit_scr   = SUBMIT_DIR / "run.sh"
+extract_scr  = SUBMIT_DIR / "extract.sh"
+dest_dir     = WORK_DIR   / "RUN1"
 
 exp = Exponent_Set.from_file(exp_path)
 
-print(BASE_DIR)
+print(f"WORK_DIR:   {WORK_DIR}")
+print(f"SUBMIT_DIR: {SUBMIT_DIR}")
 
 # ── Run 1: uncontracted ──────────────────────────────────────────────────────
 
@@ -43,7 +45,7 @@ M2 = Job_Manager(
     Executor_Type.LOCAL_BASH,
     submit_scr,
     extract_scr,
-    group_dir_path=BASE_DIR / "RUN2",
+    group_dir_path=WORK_DIR / "RUN2",
     full_logging=True,
     overwrite_existing=True,
 )
@@ -72,15 +74,16 @@ M2.run_all_jobs(1)
 
 # ── Energy comparison ────────────────────────────────────────────────────────
 
-print("\n" + "─" * 58)
-print(f"{'Job':>4} | {'Uncontracted':>22} | {'Contracted':>22}")
-print("─" * 58)
+print("\n" + "─" * 82)
+print(f"{'Job':>4} | {'Uncontracted':>22} | {'Contracted':>22} | {'Difference':>22}")
+print("─" * 82)
 
 for job1, job2 in pairs:
     e1 = job1.exponent_set.energy
     e2 = job2.exponent_set.energy
-    s1 = f"{e1:.10f}" if e1 is not None else "FAILED"
-    s2 = f"{e2:.10f}" if e2 is not None else "FAILED"
-    print(f"{job1.job_id:>4} | {s1:>22} | {s2:>22}")
+    s1   = f"{e1:.10f}"      if e1 is not None else "FAILED"
+    s2   = f"{e2:.10f}"      if e2 is not None else "FAILED"
+    sdiff = f"{e2-e1:.10f}"  if (e1 is not None and e2 is not None) else "N/A"
+    print(f"{job1.job_id:>4} | {s1:>22} | {s2:>22} | {sdiff:>22}")
 
-print("─" * 58)
+print("─" * 82)
