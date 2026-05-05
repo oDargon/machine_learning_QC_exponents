@@ -2,7 +2,7 @@ from pathlib import Path
 from .exponent_handler import Exponent_Set
 from .objectives import Objective
 from .opt_tools_new import local_exponent_removal_analysis, exponent_difference_metrics
-from numpy import exp, log, delete, float64, ndarray, eye
+from numpy import exp, log, delete, float64, ndarray, eye, array
 from numpy.linalg import eigvalsh
 import shutil
 from datetime import datetime
@@ -59,8 +59,8 @@ def evaluate_initial_energy(
     return float64(energies[0])
 
 
-def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, objective: Objective, work_dir: Path | str, generation_size: int = 30, sigma: float = 0.1, max_generations: int = 50, threads: int = 1,
-                              *, overwrite: bool = False, cma_state: list | None = None, logging: bool = False, use_stopping: bool = False) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
+def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | None, objective: Objective, work_dir: Path | str, generation_size: int = 30, sigma: float = 0.1, max_generations: int = 50, threads: int = 1,
+                              *, overwrite: bool = False, cma_state: list | None = None, logging: bool = False, use_stopping: bool = False, active_shells: list[int] | None = None, contract_frozen_shells: bool = False) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
 
     # sig = inspect.signature(cma_fixed_exponent_count)
     # bound = sig.bind(start_exp, start_energy, objective, work_dir,
@@ -89,11 +89,23 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
     best_dir = work_dir / "best_per_generation"
     best_dir.mkdir(exist_ok=True)
 
+    n_shells = len(start_exp.exponents)
+    if active_shells is not None:
+        if len(active_shells) != n_shells:
+            raise ValueError(
+                f"active_shells length ({len(active_shells)}) must match number of shells ({n_shells})"
+            )
+        active_mask = [bool(v) for v in active_shells]
+    else:
+        active_mask = [True] * n_shells
+
+    frozen_shells = [not a for a in active_mask]
+    if all(frozen_shells):
+        raise ValueError("All shells are frozen — nothing for CMA to optimise.")
+
     csv_file         = work_dir / "cma_trace.csv"
     csv_f            = open(csv_file, "w", newline="")
     csv_writer       = csv.writer(csv_f)
-    n_shells_initial = len(start_exp.exponents)
-
     header = [
         "generation",
         "fevals",
@@ -104,14 +116,19 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
         "max_global_x_change",
     ]
 
-    for l in range(n_shells_initial):
+    for l in range(n_shells):
         header.append(f"shell_{l}_rms_x")
         header.append(f"shell_{l}_max_x")
 
     csv_writer.writerow(header)
     csv_f.flush()
 
-    x0 = log(start_exp.flatten_exps())
+    x0 = array([
+        float(log(v))
+        for l, active in enumerate(active_mask) if active
+        for v in start_exp.exponents[l]
+    ], dtype=float64)
+
     es = cma.CMAEvolutionStrategy(x0, sigma, {'popsize': generation_size})
     t0 = time.time()
 
@@ -141,7 +158,17 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
         exp_objects = []
         for vec in population:
             new_exp = start_exp.copy(no_energy=True)
-            new_exp.update_exponent_uncontracted_from_flat_same_shape(exp(vec))
+            idx = 0
+            for l, active in enumerate(active_mask):
+                if active:
+                    n = new_exp.lengths[l]
+                    new_exp.exponents[l] = array(exp(vec[idx : idx + n]), dtype=float64)
+                    idx += n
+                    if contract_frozen_shells:
+                        new_exp.contractions[l]      = eye(n, dtype=float64)
+                        new_exp.contracted_shells[l] = False
+            if contract_frozen_shells:
+                new_exp.contracted = any(new_exp.contracted_shells)
             exp_objects.append(new_exp)
 
         energies    = objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)
@@ -196,7 +223,7 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64, obj
             max_global_x_change,
         ]
 
-        for l in range(n_shells_initial):
+        for l in range(n_shells):
             row.append(float(per_shell_rms_x[l]))
             row.append(float(per_shell_max_x[l]))
 
@@ -236,19 +263,21 @@ def cma_culling(
     objective: Objective,
     work_dir: Path | str,
     *,
-    exponents_to_cull: int       = 1,
-    optimize_initial: bool       = False,
-    propagate_covariance: bool   = False,
-    propagation_mode: int        = 1,
-    generation_size: int         = 12,
-    sigma: float                 = 0.1,
-    max_generations: int         = 50,
-    threads: int                 = 1,
-    start_energy: float64 | None = None,
-    overwrite: bool              = False,
-    overwrite_gens: bool         = False,
-    use_stopping: bool           = False,
-    logging: int                 = 0,
+    exponents_to_cull: int          = 1,
+    optimize_initial: bool          = False,
+    propagate_covariance: bool      = False,
+    propagation_mode: int           = 1,
+    generation_size: int            = 12,
+    sigma: float                    = 0.1,
+    max_generations: int            = 50,
+    threads: int                    = 1,
+    start_energy: float64 | None    = None,
+    overwrite: bool                 = False,
+    overwrite_gens: bool            = False,
+    use_stopping: bool              = False,
+    logging: int                    = 0,
+    active_shells: list[int] | None  = None,
+    contract_frozen_shells: bool     = False,
 ):
 
     print(threads)
@@ -280,6 +309,36 @@ def cma_culling(
     current_exp  = start_exp.copy(no_energy=True)
     if start_energy is None:
         start_energy = evaluate_initial_energy(start_exp, objective, work_dir, threads=threads)
+
+    frozen_mask = (
+        [not bool(v) for v in active_shells]
+        if active_shells is not None
+        else [False] * len(start_exp.exponents)
+    )
+
+    if contract_frozen_shells and any(frozen_mask):
+        needs_contr_run = any(
+            start_exp._is_identity(start_exp.contractions[l])
+            for l, frozen in enumerate(frozen_mask) if frozen
+        )
+        if needs_contr_run:
+            if start_exp.resulting_contraction is None:
+                evaluate_initial_energy(
+                    start_exp, objective, work_dir,
+                    threads=threads, subdir_name="initial_contraction_eval",
+                )
+            if start_exp.resulting_contraction is not None:
+                for l, frozen in enumerate(frozen_mask):
+                    if frozen:
+                        current_exp.contractions[l]      = start_exp.resulting_contraction[l].copy()
+                        current_exp.contracted_shells[l] = True
+                current_exp.contracted = any(current_exp.contracted_shells)
+            else:
+                print(
+                    "[Warning] contract_frozen_shells=True but the initial run "
+                    "produced no ANO contraction; frozen shells will remain uncontracted."
+                )
+
     last_energy  = start_energy
     last_es      = None  # for covariance propagation if desired
     t0           = time.time()
@@ -331,12 +390,14 @@ def cma_culling(
                 last_energy,
                 objective,
                 opt0_dir,
-                generation_size =generation_size,
-                sigma           =sigma,
-                max_generations =max_generations,
-                threads         =threads,
-                overwrite       =overwrite_gens,
-                logging         =logging > 1,
+                generation_size        =generation_size,
+                sigma                  =sigma,
+                max_generations        =max_generations,
+                threads                =threads,
+                overwrite              =overwrite_gens,
+                logging                =logging > 1,
+                active_shells          =active_shells,
+                contract_frozen_shells =contract_frozen_shells,
             )
 
             optimized_exp.save(best_culled_dir, "culled_000_optimized.expo")
@@ -426,14 +487,16 @@ def cma_culling(
                 cull_energy,
                 objective,
                 opt_dir,
-                generation_size = generation_size,
-                sigma           = sigma,
-                max_generations = max_generations,
-                threads         = threads,
-                overwrite       = overwrite_gens,
-                cma_state       = last_info if propagate_covariance else None,
-                use_stopping    = use_stopping,
-                logging         = logging > 1,
+                generation_size        = generation_size,
+                sigma                  = sigma,
+                max_generations        = max_generations,
+                threads                = threads,
+                overwrite              = overwrite_gens,
+                cma_state              = last_info if propagate_covariance else None,
+                use_stopping           = use_stopping,
+                logging                = logging > 1,
+                active_shells          = active_shells,
+                contract_frozen_shells = contract_frozen_shells,
             )
             
             optimized_exp.save(best_culled_dir, f"culled_{i+1:03d}_optimized.expo")
