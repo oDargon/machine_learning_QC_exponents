@@ -164,7 +164,12 @@ class Molcas_Job:
         resulting_contraction = None
         ano_files = [f for f in self.job_dir.iterdir() if f.suffix.upper() == ".ANO"]
         if ano_files:
-            resulting_contraction = self._extract_ano_contractions(ano_files[0])
+            try:
+                resulting_contraction = self._extract_ano_contractions(ano_files[0])
+            except Exception as e:
+                if self.logging:
+                    print(f"[MolcasJob] ANO parse error for job '{self.job_id}': {e}")
+                resulting_contraction = None
             if self.logging:
                 print(f"[MolcasJob] ANO file found for job '{self.job_id}': {ano_files[0].name}")
 
@@ -315,7 +320,12 @@ class Molcas_Job:
                 if self.logging:
                     print(f"[MolcasJob] Unexpected ANO header line: '{lines[i]}'")
                 return None
-            n_prim, n_cont = int(parts[0]), int(parts[1])
+            try:
+                n_prim, n_cont = int(parts[0]), int(parts[1])
+            except ValueError:
+                if self.logging:
+                    print(f"[MolcasJob] Non-integer ANO header in shell {len(shells)}: '{lines[i]}'")
+                return None
             i += 1
 
             rows = []
@@ -324,7 +334,12 @@ class Molcas_Job:
                     if self.logging:
                         print(f"[MolcasJob] Unexpected end of ANO file in shell {len(shells)}, row {row_idx}")
                     return None
-                vals = list(map(float, lines[i].split()))
+                try:
+                    vals = list(map(float, lines[i].split()))
+                except ValueError:
+                    if self.logging:
+                        print(f"[MolcasJob] Non-numeric ANO data in shell {len(shells)}, row {row_idx}: '{lines[i]}'")
+                    return None
                 if len(vals) != n_cont:
                     if self.logging:
                         print(f"[MolcasJob] ANO row width mismatch in shell {len(shells)}: expected {n_cont}, got {len(vals)}")
