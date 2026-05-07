@@ -40,23 +40,23 @@ def update_covariance_after_removal(C: ndarray, qnumber: tuple[int, int], exp_sh
         raise ValueError(f"Invalid mode {mode} for covariance update, expected 0 or 1")
 
 
-def evaluate_initial_energy(
+def evaluate_initial(
     exp: Exponent_Set,
     objective: Objective,
     work_dir: Path | str,
     *,
     threads: int = 1,
     subdir_name: str = "initial_eval",
-) -> float64:
+) -> Exponent_Set:
     eval_dir = Path(work_dir).resolve() / subdir_name
 
-    energies = objective.evaluate_batch(
+    results = objective.evaluate_batch(
         [exp],
         work_dir=eval_dir,
         threads=threads,
     )
 
-    return float64(energies[0])
+    return results[0]
 
 
 def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | None, objective: Objective, work_dir: Path | str, generation_size: int = 30, sigma: float = 0.1, max_generations: int = 50, threads: int = 1,
@@ -180,7 +180,8 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | No
                 new_exp.contracted = any(new_exp.contracted_shells)
             exp_objects.append(new_exp)
 
-        energies    = objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)
+        results     = objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)
+        energies    = array([r.energy for r in results], dtype=float64)
         best_idx    = int(energies.argmin())
         best_energy = energies[best_idx]
         recent_best_energies.append(float(best_energy))
@@ -189,9 +190,9 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | No
 
         if best_energy < best_energy_overall:
             best_energy_overall = best_energy
-            best_exp_overall    = exp_objects[best_idx].copy(no_energy=True)
+            best_exp_overall    = results[best_idx].copy(no_energy=True)
 
-        best_exp_gen = exp_objects[best_idx].copy(no_energy=True)
+        best_exp_gen = results[best_idx].copy(no_energy=True)
         best_exp_gen.save(best_dir, f"gen_{gen:03d}")
 
         es.tell(population, energies)
@@ -333,8 +334,6 @@ def cma_culling(
     run_csvs_dir.mkdir(exist_ok=True)
 
     current_exp  = start_exp.copy(no_energy=True)
-    if start_energy is None:
-        start_energy = evaluate_initial_energy(start_exp, objective, work_dir, threads=threads)
 
     frozen_mask = (
         [not bool(v) for v in active_shells]
@@ -349,7 +348,7 @@ def cma_culling(
         )
         if needs_contr_run:
             if start_exp.resulting_contraction is None:
-                evaluate_initial_energy(
+                start_exp = evaluate_initial(
                     start_exp, objective, work_dir,
                     threads=threads, subdir_name="initial_contraction_eval",
                 )
@@ -364,6 +363,15 @@ def cma_culling(
                     "[Warning] contract_frozen_shells=True but the initial run "
                     "produced no ANO contraction; frozen shells will remain uncontracted."
                 )
+
+    if start_energy is None:
+        current_exp  = evaluate_initial(current_exp, objective, work_dir, threads=threads)
+        start_energy = float64(current_exp.energy)
+    elif contract_frozen_shells and any(frozen_mask):
+        print(
+            "[Warning] start_energy was provided externally but contract_frozen_shells=True. "
+            "The supplied energy may be inconsistent with the contracted calculation."
+        )
 
     last_energy  = start_energy
     last_es      = None  # for covariance propagation if desired
@@ -395,9 +403,47 @@ def cma_culling(
     csv_f.flush()
 
     with open(log_file, "a") as log_f:
-        log_f.write(
-            f"\n=== CMA CULLING START {datetime.now().isoformat(timespec='seconds')} ===\n\n"
-        )
+        W = 72
+        header_lines = [
+            f"\n{'=' * W}",
+            f"  CMA CULLING START  {datetime.now().isoformat(timespec='seconds')}",
+            f"{'=' * W}",
+            f"  Work dir          : {work_dir}",
+            f"  Atom              : {start_exp.atom_name}",
+            f"  Shells            : {n_shells}",
+        ]
+        for l in range(n_shells):
+            status = "FROZEN" if frozen_mask[l] else "ACTIVE"
+            contr  = "CONTRACTED" if current_exp.contracted_shells[l] else "UNCONTRACTED"
+            n_prim = start_exp.lengths[l]
+            n_cont = current_exp.contractions[l].shape[0]
+            header_lines.append(
+                f"    Shell {l}  {status:<6}  {contr:<12}  —  {n_prim:>3} prim, {n_cont:>3} cont"
+            )
+        header_lines += [
+            f"",
+            f"  Start energy      : {start_energy:.10f}  Hartree",
+            f"",
+            f"  --- CMA parameters ---",
+            f"  sigma             : {sigma}",
+            f"  generation_size   : {generation_size}",
+            f"  max_generations   : {max_generations}",
+            f"  threads           : {threads}",
+            f"  use_stopping      : {use_stopping}",
+            f"",
+            f"  --- Culling parameters ---",
+            f"  exponents_to_cull     : {exponents_to_cull}",
+            f"  optimize_initial      : {optimize_initial}",
+            f"  propagate_covariance  : {propagate_covariance}",
+            f"  propagation_mode      : {propagation_mode}",
+            f"  contract_frozen_shells: {contract_frozen_shells}",
+            f"{'=' * W}",
+            f"",
+        ]
+        for line in header_lines:
+            log_f.write(line + "\n")
+            if logging > 0:
+                print(line)
         log_f.flush()
 
         # ---- optional initial optimization ----

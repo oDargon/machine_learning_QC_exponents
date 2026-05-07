@@ -23,7 +23,7 @@ class Objective(ABC):
         names: List[str] | None                = None,
         overwrite: bool                        = False,
         **kwargs
-        ) -> ndarray:
+        ) -> List[Exponent_Set]:
 
         cfg = copy.deepcopy(manager_cfg or self.default_manager_cfg)
         if cfg is None:
@@ -52,7 +52,7 @@ class Objective(ABC):
         rasorbs: None | Path | str | List[Path | str] | List[List[Path | str]] = None,
         names: List[str] | None = None,
         **kwargs
-        ) -> ndarray:
+        ) -> List[Exponent_Set]:
         ...
 
     def _validate_batch_rasorbs(
@@ -120,10 +120,8 @@ class Ground_Energy_Objective(Objective):
         rasorbs: None | Path | str | List[Path | str] | List[List[Path | str]] = None,
         names: List[str] | None = None,
         **kwargs
-        ) -> ndarray:
+        ) -> List[Exponent_Set]:
 
-        energies = []
-            
         rasorb_mode = self._validate_batch_rasorbs(rasorbs)
 
         if rasorb_mode == "nested" and len(rasorbs) != len(exponents):
@@ -149,12 +147,13 @@ class Ground_Energy_Objective(Objective):
 
         manager.run_all_jobs(threads)
 
-        for job in manager.jobs:
-            energies.append(job.exponent_set.energy if job.exponent_set.energy is not None else 1e6)
-
         manager.collect_successful_results()
 
-        return array(energies, dtype=float64)
+        for job in manager.jobs:
+            if job.exponent_set.energy is None:
+                job.exponent_set.energy = 1e6
+
+        return [job.exponent_set for job in manager.jobs]
 
 #DEPRECATED################################################################################################################################################
 class Ground_Energy_Objective_GCA(Objective):

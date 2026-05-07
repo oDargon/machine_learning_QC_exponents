@@ -21,7 +21,7 @@ def local_exponent_removal_analysis(in_exp: Exponent_Set, in_energy: float64, ob
             labels.append( (l, q) )
             i += 1
 
-    energies = objective.evaluate_batch(
+    results  = objective.evaluate_batch(
         exponents,
         work_dir=work_dir,
         names=[ f"Removed_{l}_{q}" for l, q in labels ],
@@ -29,6 +29,7 @@ def local_exponent_removal_analysis(in_exp: Exponent_Set, in_energy: float64, ob
         overwrite=overwrite
     ) #This is technicaly the 'objective values' which need not be the energy.
 
+    energies = array([r.energy for r in results], dtype=float64)
     deltas   = energies - in_energy
     best_idx = argmin(deltas)
 
@@ -44,7 +45,7 @@ def local_exponent_removal_analysis(in_exp: Exponent_Set, in_energy: float64, ob
         print("-" * 40)
         print(f"l={l_best}  q={q_best}   ΔE = {deltas[best_idx]: .6e}")
 
-    return energies[best_idx], exponents[best_idx].copy(no_energy=True), best_idx, labels[best_idx]
+    return energies[best_idx], results[best_idx].copy(no_energy=True), best_idx, labels[best_idx]
 
 def least_important_indices(cov: ndarray):
 
