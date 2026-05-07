@@ -112,6 +112,7 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | No
         "time_sec",
         "best_energy_gen",
         "best_energy_overall",
+        "sigma",
         "total_x_change",
         "max_global_x_change",
     ]
@@ -119,6 +120,14 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | No
     for l in range(n_shells):
         header.append(f"shell_{l}_rms_x")
         header.append(f"shell_{l}_max_x")
+
+    for l, active in enumerate(active_mask):
+        if active:
+            for q in range(start_exp.lengths[l]):
+                header.append(f"ind_sigma_l{l}_q{q}")
+
+    header.append("max_pct_change_from_mean")
+    header.append("avg_pct_change_from_mean")
 
     csv_writer.writerow(header)
     csv_f.flush()
@@ -213,12 +222,23 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | No
         per_shell_max_x     = exp(per_shell_max)
 
         # ---- CSV row ----
+        indiv_sigmas = es.sigma * (es.sm.C.diagonal() ** 0.5)
+
+        mean_exp = exp(es.mean)
+        best_active = array([
+            float(v)
+            for l, active in enumerate(active_mask) if active
+            for v in best_exp_gen.exponents[l]
+        ], dtype=float64)
+        pct_changes_from_mean = abs((best_active - mean_exp) / mean_exp) * 100.0
+
         row = [
             gen,
             fevals,
             float(elapsed),
             float(best_energy),
             float(best_energy_overall),
+            float(es.sigma),
             total_x_change,
             max_global_x_change,
         ]
@@ -226,6 +246,12 @@ def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | No
         for l in range(n_shells):
             row.append(float(per_shell_rms_x[l]))
             row.append(float(per_shell_max_x[l]))
+
+        for s in indiv_sigmas:
+            row.append(float(s))
+
+        row.append(float(pct_changes_from_mean.max()))
+        row.append(float(pct_changes_from_mean.mean()))
 
         csv_writer.writerow(row)
         csv_f.flush()

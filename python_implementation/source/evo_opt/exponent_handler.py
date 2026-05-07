@@ -39,9 +39,10 @@ class Exponent_Set:
         self.resulting_contraction: Optional[List[ndarray]] = None
 
         # ---- simulation state ----
-        self.energy: Optional[float] = energy if energy is not None else None
-        self.used: bool              = False
-        self.is_copy: bool           = False
+        self.energy: Optional[float]          = energy if energy is not None else None
+        self.molcas_time_sec: Optional[float] = None
+        self.used: bool                       = False
+        self.is_copy: bool                    = False
 
         # ---- normalize & validate ----
         self._initialize()
@@ -195,9 +196,12 @@ class Exponent_Set:
         *,
         energy: Optional[float]          = None,
         resulting_contraction: Optional[List[ndarray]] = None,
+        molcas_time_sec: Optional[float] = None,
     ) -> None:
         if energy is not None:
             self.energy = float(energy)
+        if molcas_time_sec is not None:
+            self.molcas_time_sec = float(molcas_time_sec)
         if resulting_contraction is not None:
             if len(resulting_contraction) != len(self.exponents):
                 raise ValueError(

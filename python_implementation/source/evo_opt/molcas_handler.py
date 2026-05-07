@@ -156,8 +156,20 @@ class Molcas_Job:
             self.save_exponent_file()
             return
 
+        # Extract MOLCAS timing ("--- Module auto spent X seconds") from end of log
+        molcas_time_sec = None
+        with open(self.output_file) as f:
+            for line in reversed(f.readlines()):
+                if "Module auto spent" in line:
+                    try:
+                        molcas_time_sec = float(line.split()[-2])
+                    except (ValueError, IndexError):
+                        pass
+                    break
+        self.molcas_time_sec = molcas_time_sec
+
         # Energy found, mark complete
-        self.results = {"energy": energy}
+        self.results = {"energy": energy, "molcas_time_sec": molcas_time_sec}
         self.status  = Job_Status.COMPLETED
 
         # Check for ANO file and extract resulting contractions if present
@@ -174,7 +186,7 @@ class Molcas_Job:
                 print(f"[MolcasJob] ANO file found for job '{self.job_id}': {ano_files[0].name}")
 
         # Update exponent set
-        self.exponent_set.assign_results(energy=energy, resulting_contraction=resulting_contraction)
+        self.exponent_set.assign_results(energy=energy, resulting_contraction=resulting_contraction, molcas_time_sec=molcas_time_sec)
         self.save_exponent_file()
 
         if self.logging:
