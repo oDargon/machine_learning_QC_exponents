@@ -709,3 +709,16 @@ class Exponent_Set:
             contracted_shells if contracted_shells is not None
             else [True] * len(self.exponents)
         )
+
+    def uncontract_shell(self, l: int) -> None:
+        if l < 0 or l >= len(self.exponents):
+            raise IndexError(f"Invalid shell index l={l}")
+        n                         = self.lengths[l]
+        self.contractions[l]      = eye(n, dtype=float64)
+        self.n_contracted[l]      = n
+        self.contracted_shells[l] = False
+        self.contracted           = any(self.contracted_shells)
+
+    def uncontract_all(self) -> None:
+        for l in range(len(self.exponents)):
+            self.uncontract_shell(l)

@@ -126,6 +126,41 @@ def per_shell_max_log_difference(exp1: Exponent_Set, exp2: Exponent_Set):
 
     return result
 
+def exponent_primitive_difference_metrics(exp1: Exponent_Set, exp2: Exponent_Set):
+    if exp1.lengths != exp2.lengths:
+        raise ValueError("Exponent sets must have the same number of primitives per shell to compare.")
+
+    flat1 = exp1.flatten_exps()
+    flat2 = exp2.flatten_exps()
+
+    if len(flat1) == 0:
+        total_rms  = 0.0
+        max_global = 0.0
+    else:
+        diff       = log(flat1 / flat2)
+        total_rms  = float(sqrt(mean(diff * diff)))
+        max_global = float(max(abs(diff)))
+
+    n_shells      = len(exp1.exponents)
+    per_shell_rms = empty(n_shells, dtype=float64)
+    per_shell_max = empty(n_shells, dtype=float64)
+
+    for l in range(n_shells):
+        shell1 = exp1.exponents[l]
+        shell2 = exp2.exponents[l]
+
+        if len(shell1) == 0:
+            per_shell_rms[l] = 0.0
+            per_shell_max[l] = 0.0
+            continue
+
+        d                = log(shell1 / shell2)
+        per_shell_rms[l] = sqrt(mean(d * d))
+        per_shell_max[l] = max(abs(d))
+
+    return [total_rms, per_shell_rms, max_global, per_shell_max]
+
+
 def exponent_difference_metrics(exp1: Exponent_Set, exp2: Exponent_Set):
     if not exp1.same_shape_as(exp2):
         raise ValueError("Exponent sets must have the same shape to compare.")
