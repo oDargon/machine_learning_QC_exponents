@@ -319,7 +319,7 @@ class Molcas_Job:
             if self.logging:
                 print(f"[MolcasJob] Invalid extractor output for job '{self.job_id}': {output}")
             return None
-
+ 
     def _extract_ano_contractions(self, ano_file: Path) -> Optional[List[ndarray]]:
         with open(ano_file) as f:
             lines = [ln.strip() for ln in f if ln.strip()]
@@ -342,22 +342,24 @@ class Molcas_Job:
 
             rows = []
             for row_idx in range(n_prim):
-                if i >= len(lines):
-                    if self.logging:
-                        print(f"[MolcasJob] Unexpected end of ANO file in shell {len(shells)}, row {row_idx}")
-                    return None
-                try:
-                    vals = list(map(float, lines[i].split()))
-                except ValueError:
-                    if self.logging:
-                        print(f"[MolcasJob] Non-numeric ANO data in shell {len(shells)}, row {row_idx}: '{lines[i]}'")
-                    return None
+                vals = []
+                while len(vals) < n_cont:
+                    if i >= len(lines):
+                        if self.logging:
+                            print(f"[MolcasJob] Unexpected end of ANO file in shell {len(shells)}, row {row_idx}")
+                        return None
+                    try:
+                        vals.extend(map(float, lines[i].split()))
+                    except ValueError:
+                        if self.logging:
+                            print(f"[MolcasJob] Non-numeric ANO data in shell {len(shells)}, row {row_idx}: '{lines[i]}'")
+                        return None
+                    i += 1
                 if len(vals) != n_cont:
                     if self.logging:
                         print(f"[MolcasJob] ANO row width mismatch in shell {len(shells)}: expected {n_cont}, got {len(vals)}")
                     return None
                 rows.append(vals)
-                i += 1
 
             # ANO stores (n_prim x n_cont); our convention is (n_cont x n_prim)
             shells.append(array(rows, dtype=float64).T)

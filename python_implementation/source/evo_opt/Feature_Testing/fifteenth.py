@@ -21,12 +21,14 @@ submit_scr  = SUBMIT_DIR / "run.sh"
 extract_scr = SUBMIT_DIR / "extract.sh"
 
 CORES_PER_SHELL    = [12, 11, 7, 5, 1]
-GENS_PER_SHELL     = [12, 11, 7, 5, 1]
+GEN_SIZE_PER_SHELL = [12, 11, 7, 5, 1]
 SIGMA              = 0.01
+MAX_GENERATIONS    = 10
 CYCLES             = 5
 MU                 = 0.95
 SHELLS_TO_OPTIMIZE = [0, 1, 2, 3]
 PROPAGATE_CMA      = True
+USE_STOPPING       = False
 
 L_LABELS = ["s", "p", "d", "f", "g", "h"]
 
@@ -75,7 +77,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f:
         for j in SHELLS_TO_OPTIMIZE:
             lbl      = L_LABELS[j] if j < len(L_LABELS) else str(j)
             n_exp    = len(current_exp.exponents[j])
-            gen_size = CORES_PER_SHELL[j]
+            gen_size = GEN_SIZE_PER_SHELL[j]
 
             print(f"{SEP}")
             print(f"  Cycle {i + 1}/{CYCLES}  |  Shell {j} ({lbl})  |  {n_exp} exponents  |  popsize={gen_size}  |  sigma={SIGMA}")
@@ -100,10 +102,11 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f:
 
             spec = {
                 "active_shell":    j,
-                "generation_size": CORES_PER_SHELL[j],
+                "generation_size": GEN_SIZE_PER_SHELL[j],
                 "threads":         CORES_PER_SHELL[j],
                 "sigma":           SIGMA,
-                "max_generations": GENS_PER_SHELL[j],
+                "max_generations": MAX_GENERATIONS,
+                "use_stopping":    USE_STOPPING,
                 "start_energy":    float(current_energy),
             }
 
@@ -137,7 +140,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f:
             shutil.rmtree(CURRENT_OPT)
 
             log.write(f"{SEP}\n")
-            log.write(f"Cycle {i + 1:2d}/{CYCLES}  |  Shell {j} ({lbl})  |  {n_exp} exponents  |  popsize={gen_size}  |  max_gen={GENS_PER_SHELL[j]}\n")
+            log.write(f"Cycle {i + 1:2d}/{CYCLES}  |  Shell {j} ({lbl})  |  {n_exp} exponents  |  popsize={gen_size}  |  max_gen={MAX_GENERATIONS}\n")
             log.write(f"  E_before  = {pre_energy:20.10f} Eh\n")
             log.write(f"  E_after   = {new_exp.energy:20.10f} Eh\n")
             log.write(f"  dE        = {delta_e:+20.10f} Eh\n")
@@ -147,7 +150,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f:
             log.flush()
 
             csv_writer.writerow([
-                i + 1, j, lbl, n_exp, gen_size, GENS_PER_SHELL[j],
+                i + 1, j, lbl, n_exp, gen_size, MAX_GENERATIONS,
                 f"{pre_energy:.10f}", f"{new_exp.energy:.10f}",
                 f"{delta_e:.10f}", f"{cumulative_e:.10f}", f"{delta_pct:.4f}",
             ])
