@@ -71,6 +71,13 @@ class Exponent_Set:
         if self._raw_contractions is not None:
             for i, cont in enumerate(self._raw_contractions):
                 cont_arr = array(cont, dtype=float64)
+                if cont_arr.ndim == 1 and cont_arr.size == 0:
+                    # zero contracted rows (no primitives, or primitives with
+                    # no contracted functions assigned) round-trip through
+                    # save()/load() as an empty list, which array() collapses
+                    # to shape (0,) instead of the 2D (0, n_primitives) the
+                    # matrix actually represents.
+                    cont_arr = cont_arr.reshape(0, self.exponents[i].shape[0])
                 self._validate_contractions(cont_arr, self.exponents[i], i)
                 self.contractions.append(cont_arr)
         else:
@@ -102,6 +109,8 @@ class Exponent_Set:
             res_conts = []
             for i, cont in enumerate(self._raw_resulting_contraction):
                 cont_arr = array(cont, dtype=float64)
+                if cont_arr.ndim == 1 and cont_arr.size == 0:
+                    cont_arr = cont_arr.reshape(0, self.exponents[i].shape[0])
                 self._validate_contractions(cont_arr, self.exponents[i], i)
                 res_conts.append(cont_arr)
             self.resulting_contraction = res_conts
