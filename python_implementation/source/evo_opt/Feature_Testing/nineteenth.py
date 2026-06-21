@@ -6,6 +6,7 @@ import shutil
 import argparse
 import subprocess
 from pathlib import Path
+from numpy import concatenate
 
 # submit_dir: front-end dir with Si.expo/template.inp/template_full.inp/run.sh/extract.sh.
 # work_dir: backend scratch dir this run executes in (e.g. node-local tmp on a SLURM allocation).
@@ -114,8 +115,9 @@ full_manager = Job_Manager(
     custom_poll_interval = 0.1,
 )
 
-full_jobs         = []
-full_run_energies = [float(init_uncontracted.energy)]   # energy of every completed full run, free byproduct
+full_jobs          = []
+full_run_energies  = [float(init_uncontracted.energy)]   # energy of every completed full run, free byproduct
+full_run_exponents = [concatenate([init_uncontracted.exponents[j] for j in SHELLS_TO_OPTIMIZE])]
 
 SEP           = "=" * 72
 LOG_FILE      = SUBMIT_DIR / "cyclic_log.txt"
@@ -132,7 +134,7 @@ CSV_HEADER = [
     "cycle", "shell", "shell_label", "n_exponents", "popsize", "max_generations",
     "E_before", "E_after", "dE", "exp_change_pct",
 ]
-FULL_CSV_HEADER = ["order", "launch_cycle", "landed_cycle", "energy", "dE", "dE_total", "wall_time_sec", "cumulative_wall_time_sec"]
+FULL_CSV_HEADER = ["order", "launch_cycle", "landed_cycle", "energy", "dE", "dE_total", "wall_time_sec", "cumulative_wall_time_sec", "exp_change_pct"]
 
 with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
      open(FULL_LOG_FILE, "w") as full_log, open(FULL_CSV_FILE, "w", newline="") as full_csv_f:
@@ -146,7 +148,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
     cumulative_wall_time = 0.0
 
     full_csv_writer.writerow([
-        0, "bootstrap", "bootstrap", f"{full_run_energies[0]:.10f}", f"{0.0:.10f}", f"{0.0:.10f}", "NA", f"{cumulative_wall_time:.2f}",
+        0, "bootstrap", "bootstrap", f"{full_run_energies[0]:.10f}", f"{0.0:.10f}", f"{0.0:.10f}", "NA", f"{cumulative_wall_time:.2f}", f"{0.0:.4f}",
     ])
     full_csv_f.flush()
 
@@ -178,9 +180,13 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
 
                 cumulative_wall_time += wall_time
 
+                flat_now = concatenate([full_job.exponent_set.exponents[j] for j in SHELLS_TO_OPTIMIZE])
+                exp_change_pct = float((abs(flat_now - full_run_exponents[order - 1]) / full_run_exponents[order - 1]).mean()) * 100
+                full_run_exponents.append(flat_now)
+
                 full_csv_writer.writerow([
                     order, entry_scan["launch_cycle"] + 1, i + 1,
-                    f"{energy:.10f}", f"{dE:.10f}", f"{dE_total:.10f}", f"{wall_time:.2f}", f"{cumulative_wall_time:.2f}",
+                    f"{energy:.10f}", f"{dE:.10f}", f"{dE_total:.10f}", f"{wall_time:.2f}", f"{cumulative_wall_time:.2f}", f"{exp_change_pct:.4f}",
                 ])
                 full_csv_f.flush()
 
@@ -191,6 +197,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
                 full_log.write(f"  dE_total  = {dE_total:+20.10f} Eh\n")
                 full_log.write(f"  wall_time = {wall_time:19.2f} s\n")
                 full_log.write(f"  total_time = {cumulative_wall_time:18.2f} s\n")
+                full_log.write(f"  exp_chg   = {exp_change_pct:19.4f} %\n")
                 full_log.write(f"{SEP}\n\n")
                 full_log.flush()
 
