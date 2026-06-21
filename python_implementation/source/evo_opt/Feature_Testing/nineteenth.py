@@ -3,13 +3,19 @@ import csv
 import time
 import yaml
 import shutil
+import argparse
 import subprocess
 from pathlib import Path
-from numpy import array, eye, ones, trace
-from numpy.linalg import solve, LinAlgError
 
-WORK_DIR   = Path.cwd() / "Optimization"
-SUBMIT_DIR = Path.cwd()
+# submit_dir: front-end dir with Si.expo/template.inp/template_full.inp/run.sh/extract.sh.
+# work_dir: backend scratch dir this run executes in (e.g. node-local tmp on a SLURM allocation).
+_arg_parser = argparse.ArgumentParser(description="Cyclic per-shell CMA-ES exponent optimization with lazy contraction refresh")
+_arg_parser.add_argument("--submit-dir", type=Path, default=Path.cwd(), help="Directory with Si.expo/template.inp/template_full.inp/run.sh/extract.sh")
+_arg_parser.add_argument("--work-dir",   type=Path, default=None,       help="Scratch base directory (default: submit-dir); actual run lives in <this>/Optimization")
+_args = _arg_parser.parse_args()
+
+SUBMIT_DIR = _args.submit_dir.resolve()
+WORK_DIR   = ((_args.work_dir if _args.work_dir is not None else SUBMIT_DIR) / "Optimization").resolve()
 sys.path.insert(0, str(SUBMIT_DIR))
 
 from evo_opt.exponent_handler import Exponent_Set
@@ -17,40 +23,7 @@ from evo_opt.objectives import Ground_Energy_Objective
 from evo_opt.job_manager import Job_Manager, Job_Manager_Config
 from evo_opt.common import Executor_Type, Job_Status
 from evo_opt.cma_opt_2 import evaluate_initial
-
-
-def anderson_extrapolate(history, depth):
-    """
-    Type-I Anderson extrapolation over a shell's own raw (unaccelerated)
-    per-cycle result history. Returns None if there isn't enough history yet.
-
-    history: list of ndarray, oldest first - history[k] is that shell's best
-             exponents as of the end of cycle k (or the bootstrap value at
-             index 0).
-    depth:   number of residual vectors (steps back) to mix.
-    """
-    if depth < 1 or len(history) < depth + 1:
-        return None
-
-    X = array(history[-(depth + 1):])   # depth+1 points
-    F = X[1:] - X[:-1]                  # depth residuals f_i = x_{i+1} - x_i
-
-    # minimize ||F^T @ alpha||^2 s.t. sum(alpha) = 1, via Lagrange multipliers:
-    # alpha = G^-1 1 / (1^T G^-1 1), G = F F^T, regularized for stability when
-    # recent residuals are nearly collinear (common with a stochastic inner
-    # optimizer like CMA-ES).
-    G   = F @ F.T
-    reg = 1e-10 * (trace(G) / depth if trace(G) > 0 else 1.0)
-    try:
-        w = solve(G + reg * eye(depth), ones(depth))
-    except LinAlgError:
-        return None
-
-    if not w.any():
-        return None
-
-    alpha = w / w.sum()
-    return alpha @ X[1:]
+from evo_opt.anderson import anderson_extrapolate
 
 exp_path      = SUBMIT_DIR / "Si.expo"
 template      = SUBMIT_DIR / "template.inp"
@@ -67,20 +40,33 @@ SHELLS_TO_OPTIMIZE = [0, 1, 2, 3]
 PROPAGATE_CMA      = True
 USE_STOPPING       = False
 
-PROPAGATE_FULL_CONTRACTION = True
+PROPAGATE_FULL_CONTRACTION = True   # if False, shells never see contraction refreshes - effectively independent
+
 USE_ANDERSON          = True
 ANDERSON_DEPTH        = 2   # residual vectors (steps back) to mix
 ANDERSON_START_CYCLE  = 3   # earliest cycle index (0-indexed) allowed to extrapolate
 
 L_LABELS = ["s", "p", "d", "f", "g", "h"]
 
-DATA_DIR = WORK_DIR / "Data"
-FULL_DIR = WORK_DIR / "Full"   # owned by full_manager below, it creates this itself
+DATA_DIR  = WORK_DIR / "Data"
+FULL_DIR  = WORK_DIR / "Full"    # owned by full_manager below, it creates this itself
+START_DIR = WORK_DIR / "Start"
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+START_DIR.mkdir(parents=True, exist_ok=True)
 
 for j in SHELLS_TO_OPTIMIZE:
     (DATA_DIR / f"shell_{j}").mkdir(parents=True, exist_ok=True)
+
+# pull inputs from the front-end submit dir once, then work off this backend copy
+for _src in (exp_path, template, template_full, submit_scr, extract_scr):
+    shutil.copy(_src, START_DIR / _src.name)
+
+exp_path      = START_DIR / exp_path.name
+template      = START_DIR / template.name
+template_full = START_DIR / template_full.name
+submit_scr    = START_DIR / submit_scr.name
+extract_scr   = START_DIR / extract_scr.name
 
 exp = Exponent_Set.from_file(exp_path)
 n_shells = len(exp.exponents)
@@ -96,10 +82,8 @@ cfg = Job_Manager_Config(
 objective      = Ground_Energy_Objective(template,      cfg)
 full_objective = Ground_Energy_Objective(template_full, cfg)
 
-# Bootstrap: two jobs before any cycle runs.
-#   1) fully uncontracted, on the GENANO template -> the very first contraction.
-#   2) the same exponents, now contracted, on the cheap template -> the real
-#      starting energy in the regime every subsequent per-shell run lives in.
+# Bootstrap: (1) fully uncontracted on the GENANO template -> first contraction;
+# (2) same exponents, now contracted, on the cheap template -> real starting energy.
 init_uncontracted = evaluate_initial(exp, full_objective, WORK_DIR / "initial_uncontracted", threads=1)
 
 if init_uncontracted.resulting_contraction is None:
@@ -114,34 +98,13 @@ init_contracted = evaluate_initial(
 )
 start_energy = init_contracted.energy
 
-# Each shell's own freshest optimized primitives. Always inherited forward
-# from that shell's own previous optimization step, independent of the
-# (lagging) global contraction snapshot below.
-latest_own = [shell.copy() for shell in exp.exponents]
+latest_own = [shell.copy() for shell in exp.exponents]   # each shell's own freshest exponents
+last_shell_energy = [start_energy] * n_shells             # each shell's own previous result
+shell_history = {j: [latest_own[j].copy()] for j in SHELLS_TO_OPTIMIZE}   # raw per-cycle history, for Anderson
 
-# Each shell's own previous result (full-atom contracted energy from the last
-# time that specific shell was optimized). This is the meaningful "before"
-# baseline per shell now - there's no single coherent whole-atom "current
-# energy" thread anymore, since other shells sit at a lagging snapshot during
-# any one shell's run.
-last_shell_energy = [start_energy] * n_shells
-
-# Each optimized shell's own raw result history, oldest first, seeded with
-# the bootstrap value. Anderson extrapolates from this directly - it never
-# looks at global_state/contraction at all.
-shell_history = {j: [latest_own[j].copy()] for j in SHELLS_TO_OPTIMIZE}
-
-# Background full-run pipeline. A new full run is launched at the end of
-# every cycle unconditionally, so more than one can be in flight if a single
-# full run takes longer than a cycle. Each is polled (never blocked on) at
-# the top of every cycle; if several have landed by the time we check, only
-# the newest is applied to global_state and the older (superseded) ones are
-# dropped without being acted on.
-#
-# Raw Job_Manager is used here instead of Ground_Energy_Objective, since
-# evaluate_batch()/run_all_jobs() block until completion - we need to fire a
-# job and poll it ourselves. One manager is reused for every full job; it
-# gives each job its own subdirectory under FULL_DIR automatically.
+# Background full-run pipeline: launched every cycle unconditionally, polled
+# (never blocked on) each cycle, only the newest landed one gets applied.
+# Raw Job_Manager since evaluate_batch()/run_all_jobs() would block.
 full_manager = Job_Manager(
     Executor_Type.LOCAL_BASH,
     submit_scr,
@@ -155,26 +118,20 @@ full_jobs         = []
 full_run_energies = [float(init_uncontracted.energy)]   # energy of every completed full run, free byproduct
 
 SEP           = "=" * 72
-LOG_FILE      = WORK_DIR / "cyclic_log.txt"
-CSV_FILE      = WORK_DIR / "cyclic_log.csv"
-FULL_LOG_FILE = WORK_DIR / "full_log.txt"
-FULL_CSV_FILE = WORK_DIR / "full_log.csv"
+LOG_FILE      = SUBMIT_DIR / "cyclic_log.txt"
+CSV_FILE      = SUBMIT_DIR / "cyclic_log.csv"
+FULL_LOG_FILE = SUBMIT_DIR / "full_log.txt"
+FULL_CSV_FILE = SUBMIT_DIR / "full_log.csv"
 
 print(f"Log      : {LOG_FILE}")
 print(f"CSV      : {CSV_FILE}")
 print(f"Full log : {FULL_LOG_FILE}")
 print(f"Full CSV : {FULL_CSV_FILE}")
 
-# Per-shell log: each row compares a shell's result against that same shell's
-# own previous run, not against any whole-atom running total.
 CSV_HEADER = [
     "cycle", "shell", "shell_label", "n_exponents", "popsize", "max_generations",
     "E_before", "E_after", "dE", "exp_change_pct",
 ]
-
-# Full-run log: this is the one series safe to read as true cumulative
-# whole-atom progress - same (uncontracted + GENANO) method every time, built
-# from every shell's freshest value, no staleness.
 FULL_CSV_HEADER = ["order", "launch_cycle", "landed_cycle", "energy", "dE", "dE_total", "wall_time_sec", "cumulative_wall_time_sec"]
 
 with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
@@ -201,7 +158,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
 
     for i in range(CYCLES):
 
-        # ---- consume any landed full runs: scan oldest -> newest, apply only the newest one that's done ----
+        # consume any landed full runs: scan oldest -> newest, apply only the newest one that's done
         applied_idx = None
         for idx in range(len(full_jobs)):
             entry_scan = full_jobs[idx]
@@ -233,7 +190,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
                 full_log.write(f"  dE        = {dE:+20.10f} Eh\n")
                 full_log.write(f"  dE_total  = {dE_total:+20.10f} Eh\n")
                 full_log.write(f"  wall_time = {wall_time:19.2f} s\n")
-                full_log.write(f"  cum_time  = {cumulative_wall_time:19.2f} s\n")
+                full_log.write(f"  total_time = {cumulative_wall_time:18.2f} s\n")
                 full_log.write(f"{SEP}\n\n")
                 full_log.flush()
 
@@ -259,7 +216,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
             full_log.write(msg + "\n\n")
             full_log.flush()
 
-        # ---- Anderson: compute every optimized shell's extrapolated guess up front ----
+        # Anderson: compute every optimized shell's extrapolated guess up front
         extrapolated = {}
         for j in SHELLS_TO_OPTIMIZE:
             extrapolated[j] = (
@@ -287,10 +244,8 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
             shutil.copy(submit_scr,  INIT_DIR / "run.sh")
             shutil.copy(extract_scr, INIT_DIR / "extract.sh")
 
-            # Other shells stay at the (possibly lagging) global snapshot;
-            # only the active shell is swapped in - with its Anderson-
-            # extrapolated guess if one's available this cycle, otherwise its
-            # own raw latest value, same as before.
+            # other shells stay at the (possibly lagging) global snapshot; only the
+            # active shell is swapped in, using its Anderson guess if one's available
             seed_j = extrapolated[j] if extrapolated[j] is not None else latest_own[j]
             if extrapolated[j] is not None:
                 print(f"  [Anderson] shell {j} ({lbl}) seeded from depth-{ANDERSON_DEPTH} extrapolation")
@@ -323,10 +278,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
             with open(CONFIG_PATH, "w") as cfg_f:
                 yaml.safe_dump(spec, cfg_f)
 
-            # Logged/used for delta_pct below as the honest "before" value -
-            # the raw previous result, not whatever Anderson seeded this run
-            # with, so the delta reflects this cycle's real net movement.
-            pre_exp_j = latest_own[j].copy()
+            pre_exp_j = latest_own[j].copy()   # raw previous value, for an honest delta below
 
             subprocess.run(
                 ["cmafex", str(CONFIG_PATH), str(INIT_DIR), str(MEM_DIR)],
@@ -369,7 +321,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
             last_shell_energy[j]  = new_exp.energy
             shell_history[j].append(new_exp.exponents[j])
 
-        # ---- launch this cycle's full run unconditionally ----
+        # launch this cycle's full run unconditionally
         full_exp = global_state.copy(no_energy=True)
         for k in range(n_shells):
             full_exp.exponents[k] = latest_own[k].copy()
@@ -384,8 +336,3 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
             "launch_cycle": i,
             "launch_time":  launch_time,
         })
-
-        msg = f"[Full] launched run from cycle {i + 1} state -> {full_job.job_dir}"
-        print(msg)
-        full_log.write(msg + "\n\n")
-        full_log.flush()
