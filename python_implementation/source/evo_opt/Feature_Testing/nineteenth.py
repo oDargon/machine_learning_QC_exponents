@@ -12,11 +12,11 @@ from numpy import concatenate
 # work_dir: backend scratch dir this run executes in (e.g. node-local tmp on a SLURM allocation).
 _arg_parser = argparse.ArgumentParser(description="Cyclic per-shell CMA-ES exponent optimization with lazy contraction refresh")
 _arg_parser.add_argument("--submit-dir", type=Path, default=Path.cwd(), help="Directory with Si.expo/template.inp/template_full.inp/run.sh/extract.sh")
-_arg_parser.add_argument("--work-dir",   type=Path, default=None,       help="Scratch base directory (default: submit-dir); actual run lives in <this>/Optimization")
+_arg_parser.add_argument("--work-dir",   type=Path, required=True,      help="Scratch base directory; actual run lives in <this>/Optimization")
 _args = _arg_parser.parse_args()
 
 SUBMIT_DIR = _args.submit_dir.resolve()
-WORK_DIR   = ((_args.work_dir if _args.work_dir is not None else SUBMIT_DIR) / "Optimization").resolve()
+WORK_DIR   = (_args.work_dir / "Optimization").resolve()
 sys.path.insert(0, str(SUBMIT_DIR))
 
 from evo_opt.exponent_handler import Exponent_Set
