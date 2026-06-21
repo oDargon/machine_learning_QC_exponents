@@ -72,6 +72,7 @@ def cma_fixed_exponent_count(
     init_state_path: Path | None = None,
     memory_dir: Path | None      = None,
     update_cadence: int          = 10,
+    mean_override: ndarray | None = None,
 ) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
 
     work_dir = Path(work_dir).resolve()
@@ -101,6 +102,13 @@ def cma_fixed_exponent_count(
     if init_state_path is not None and Path(init_state_path).exists():
         with open(init_state_path, 'rb') as f:
             es = pickle.load(f)
+
+    if mean_override is not None:
+        # Recenter the search (e.g. an Anderson-extrapolated guess) without
+        # touching the propagated covariance/sigma - x0 above only takes
+        # effect when there's no prior state to unpickle, so this is the only
+        # way to inject a different starting point once a run is warm-started.
+        es.mean = log(array(mean_override, dtype=float64))
 
     t0 = time.time()
 

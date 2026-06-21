@@ -3,6 +3,7 @@ import argparse
 import yaml
 import sys
 import shutil
+from numpy import array, float64
 from .exponent_handler import Exponent_Set
 from .objectives import Ground_Energy_Objective
 from .job_manager import Job_Manager_Config
@@ -90,6 +91,10 @@ def cli() -> None:
     contract_frozen = bool(spec.get("contract_frozen_shells", False))
     update_cadence  = int(spec.get("update_cadence",          10))
 
+    mean_override = spec.get("mean_override", None)
+    if mean_override is not None:
+        mean_override = array(mean_override, dtype=float64)
+
     cfg = Job_Manager_Config(
         executor_type        = Executor_Type.LOCAL_BASH,
         execution_script     = run_scr,
@@ -129,6 +134,7 @@ def cli() -> None:
         init_state_path        = init_state,
         memory_dir             = memory_dir,
         update_cadence         = update_cadence,
+        mean_override          = mean_override,
     )
 
     shutil.copy(cma_run_dir / "cma.log",       out_dir / "cma.log")
