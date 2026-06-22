@@ -184,6 +184,8 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
                 exp_change_pct = float((abs(flat_now - full_run_exponents[order - 1]) / full_run_exponents[order - 1]).mean()) * 100
                 full_run_exponents.append(flat_now)
 
+                full_job.exponent_set.save(SUBMIT_DIR, "latest_full", overwrite=True)
+
                 full_csv_writer.writerow([
                     order, entry_scan["launch_cycle"] + 1, i + 1,
                     f"{energy:.10f}", f"{dE:.10f}", f"{dE_total:.10f}", f"{wall_time:.2f}", f"{cumulative_wall_time:.2f}", f"{exp_change_pct:.4f}",
