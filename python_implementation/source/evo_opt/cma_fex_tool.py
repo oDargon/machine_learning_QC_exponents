@@ -47,15 +47,17 @@ def _find_expo(directory: Path) -> Path:
 
 def cli() -> None:
     parser = argparse.ArgumentParser(description="CMA-ES fixed exponent count optimizer for a single shells and optional contraction")
-    parser.add_argument("config",   type=Path, help="YAML with optimization parameters")
-    parser.add_argument("init_dir", type=Path, help="Directory containing .expo, template.inp, run.sh, extract.sh")
+    parser.add_argument("config",    type=Path, help="YAML with optimization parameters")
+    parser.add_argument("init_dir",  type=Path, help="Directory containing .expo, template.inp, run.sh, extract.sh")
     parser.add_argument("memory_dir", type=Path, help="Directory for persistent state (current.expo, cma_state.pkl)")
+    parser.add_argument("--out_dir", type=Path, default=None, help="Existing directory to continuously mirror cma.log, cma_trace.csv and best.expo")
     args = parser.parse_args()
 
     config_path = args.config.resolve()
     init_dir    = args.init_dir.resolve()
     work_dir    = Path.cwd().resolve()
     memory_dir  = args.memory_dir.resolve()
+    out_dir     = args.out_dir.resolve() if args.out_dir is not None else None
 
     for p, name in [(config_path, "config"), (init_dir, "init_dir")]:
         if not p.exists():
@@ -114,8 +116,9 @@ def cli() -> None:
         start_energy = start_exp.energy
 
     cma_run_dir = work_dir / "cma_run"
-    out_dir     = memory_dir.parent / "OUT"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if out_dir is None:
+        out_dir = memory_dir.parent / "OUT"
+        out_dir.mkdir(parents=True, exist_ok=True)
 
     cma_fixed_exponent_count(
         start_exp,
@@ -135,10 +138,8 @@ def cli() -> None:
         memory_dir             = memory_dir,
         update_cadence         = update_cadence,
         mean_override          = mean_override,
+        out_dir                = out_dir,
     )
-
-    shutil.copy(cma_run_dir / "cma.log",       out_dir / "cma.log")
-    shutil.copy(cma_run_dir / "cma_trace.csv", out_dir / "cma_trace.csv")
 
 
 if __name__ == "__main__":

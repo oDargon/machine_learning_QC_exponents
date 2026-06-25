@@ -73,6 +73,7 @@ def cma_fixed_exponent_count(
     memory_dir: Path | None      = None,
     update_cadence: int          = 10,
     mean_override: ndarray | None = None,
+    out_dir: Path | None          = None,
 ) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
 
     work_dir = Path(work_dir).resolve()
@@ -95,6 +96,11 @@ def cma_fixed_exponent_count(
 
     if memory_dir is not None:
         memory_dir = Path(memory_dir)
+
+    if out_dir is not None:
+        out_dir = Path(out_dir)
+        if not out_dir.exists():
+            raise FileNotFoundError(f"out_dir does not exist: {out_dir}")
 
     x0 = log(start_exp.exponents[active_shell])
     es = cma.CMAEvolutionStrategy(x0, sigma, {'popsize': generation_size})
@@ -159,6 +165,13 @@ def cma_fixed_exponent_count(
         es.tell(population, energies)
 
         logger.log_generation(gen, es.countevals, time.time() - t0, float(best_energy), float(best_energy_overall), es, best_exp_gen)
+
+        if out_dir is not None:
+            shutil.copy(work_dir / "cma.log",       out_dir / "cma.log")
+            shutil.copy(work_dir / "cma_trace.csv", out_dir / "cma_trace.csv")
+            _out_exp        = best_exp_overall.copy(no_energy=True)
+            _out_exp.energy = float(best_energy_overall)
+            _out_exp.save(out_dir, "best", overwrite=True)
 
         if memory_dir is not None and (gen + 1) % update_cadence == 0:
             with open(memory_dir / "cma_state.pkl", 'wb') as f:
