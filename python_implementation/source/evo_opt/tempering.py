@@ -52,7 +52,7 @@ def from_registry(name: str, m: int, n: int) -> Tempering_Codec:
 # --- built-in generators ---
 
 def _polynomial(n: int, m: int) -> ndarray:
-    k = arange(n, dtype=float64)
+    k = arange(n, dtype=float64) / max(n - 1, 1)   # [0,1] keeps Vandermonde well-conditioned
     return column_stack([k**i for i in range(m)])
 
 register("polynomial", _polynomial)

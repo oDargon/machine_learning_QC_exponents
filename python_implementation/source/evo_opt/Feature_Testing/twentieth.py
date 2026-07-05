@@ -63,7 +63,7 @@ if init_uncontracted.resulting_contraction is None:
 
 L_LABELS = ["s", "p", "d", "f", "g", "h"]
 if USE_TEMPERING:
-    n_active = len(contracted.exponents[ACTIVE_SHELL])
+    n_active = exp.lengths[ACTIVE_SHELL]
     print(f"Tempering           : polynomial  M={N_TEMPERING_PARAMS}  N={n_active}  shell={ACTIVE_SHELL}")
 else:
     print(f"Tempering           : off")
