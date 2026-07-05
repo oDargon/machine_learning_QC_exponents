@@ -3,6 +3,7 @@ from .exponent_handler import Exponent_Set
 from .objectives import Objective
 from .opt_tools_new import local_exponent_removal_analysis
 from .cma_logging import FixedCountLogger
+from .tempering import from_registry, Tempering_Codec
 from dataclasses import dataclass
 from numpy import exp, log, delete, float64, ndarray, eye, array
 from numpy.linalg import eigvalsh
@@ -74,6 +75,8 @@ def cma_fixed_exponent_count(
     update_cadence: int          = 10,
     mean_override: ndarray | None = None,
     out_dir: Path | None          = None,
+    use_tempering: bool           = False,
+    n_tempering_params: int       = 6,
 ) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
 
     work_dir = Path(work_dir).resolve()
@@ -102,7 +105,13 @@ def cma_fixed_exponent_count(
         if not out_dir.exists():
             raise FileNotFoundError(f"out_dir does not exist: {out_dir}")
 
-    x0 = log(start_exp.exponents[active_shell])
+    n_active = len(start_exp.exponents[active_shell])
+    codec: Tempering_Codec | None = (
+        from_registry("polynomial", m=n_tempering_params, n=n_active)
+        if use_tempering else None
+    )
+
+    x0 = codec.encode(start_exp.exponents[active_shell]) if codec else log(start_exp.exponents[active_shell])
     es = cma.CMAEvolutionStrategy(x0, sigma, {'popsize': generation_size})
 
     if init_state_path is not None and Path(init_state_path).exists():
@@ -110,11 +119,7 @@ def cma_fixed_exponent_count(
             es = pickle.load(f)
 
     if mean_override is not None:
-        # Recenter the search (e.g. an Anderson-extrapolated guess) without
-        # touching the propagated covariance/sigma - x0 above only takes
-        # effect when there's no prior state to unpickle, so this is the only
-        # way to inject a different starting point once a run is warm-started.
-        es.mean = log(array(mean_override, dtype=float64))
+        es.mean = codec.encode(array(mean_override, dtype=float64)) if codec else log(array(mean_override, dtype=float64))
 
     t0 = time.time()
 
@@ -128,7 +133,7 @@ def cma_fixed_exponent_count(
         es.sm.C = Cnew
         es.sm.update_now()
 
-    logger               = FixedCountLogger(work_dir, n_shells, active_shell, start_exp, start_energy, print_to_stdout=logging)
+    logger               = FixedCountLogger(work_dir, n_shells, active_shell, start_exp, start_energy, print_to_stdout=logging, codec=codec)
     best_energy_overall  = start_energy
     best_exp_overall     = start_exp.copy(no_energy=True)
     recent_best_energies = []
@@ -139,12 +144,17 @@ def cma_fixed_exponent_count(
         population  = es.ask()
         exp_objects = []
         for vec in population:
-            new_exp                         = start_exp.copy(no_energy=True)
-            new_exp.exponents[active_shell] = array(exp(vec), dtype=float64)
-            if contract_frozen_shells:
-                new_exp.uncontract_shell(active_shell)
+            new_exp = start_exp.copy(no_energy=True)
+            if codec:
+                new_exp.apply_params(active_shell, codec, vec, n=n_active)
+                if not contract_frozen_shells:
+                    new_exp.uncontract_all()
             else:
-                new_exp.uncontract_all()
+                new_exp.exponents[active_shell] = array(exp(vec), dtype=float64)
+                if contract_frozen_shells:
+                    new_exp.uncontract_shell(active_shell)
+                else:
+                    new_exp.uncontract_all()
             exp_objects.append(new_exp)
 
         results     = objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)

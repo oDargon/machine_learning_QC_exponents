@@ -15,7 +15,8 @@ class Exponent_Set:
         *,
         contracted: Optional[bool]                                                  = None,
         energy: Optional[float]                                                     = None,
-        resulting_contraction: Optional[List[Sequence[Sequence[float]] | ndarray]]  = None
+        resulting_contraction: Optional[List[Sequence[Sequence[float]] | ndarray]]  = None,
+        parametrization: Optional[dict]                                             = None
     ):
         # ---- metadata ----
         self.label: Optional[int] = label
@@ -46,6 +47,10 @@ class Exponent_Set:
 
         # ---- normalize & validate ----
         self._initialize()
+
+        # ---- parametrization (optional, per-shell, passive) ----
+        # dict mapping shell index -> {"type": str, "m": int, "params": list[float]}
+        self.parametrization: dict[int, dict] = dict(parametrization) if parametrization else {}
 
     # ---------------- validation helpers ----------------
 
@@ -194,8 +199,9 @@ class Exponent_Set:
             resulting_contraction=res_cont_copy,
         )
 
-        new.is_copy = True
-        new.used    = False
+        new.is_copy        = True
+        new.used           = False
+        new.parametrization = {k: dict(v) for k, v in self.parametrization.items()}
 
         return new
 
@@ -362,6 +368,16 @@ class Exponent_Set:
 
                 f.write("</RES_CONTRACTION>\n")
 
+            if self.parametrization:
+                f.write("\n<PARAMETRIZATION>\n")
+                f.write(f"{len(self.parametrization)}\n")
+                for shell_idx, entry in self.parametrization.items():
+                    f.write(f"{shell_idx}\n")
+                    f.write(f"{entry['type']}\n")
+                    f.write(f"{entry['m']}\n")
+                    f.write(" ".join(f"{v:.16e}" for v in entry['params']) + "\n")
+                f.write("</PARAMETRIZATION>\n")
+
         return path
     
     @classmethod
@@ -391,6 +407,7 @@ class Exponent_Set:
         contractions_raw           = []
         contracted_shells_raw      = None
         resulting_contraction_raw  = None
+        parametrization_raw        = {}
         found_exponents            = False
         found_contraction          = False
         found_method               = False
@@ -569,6 +586,29 @@ class Exponent_Set:
                 continue
 
 
+            # ---------- PARAMETRIZATION ----------
+            if line == "<PARAMETRIZATION>":
+                i += 1
+
+                if i >= n:
+                    raise ValueError("Unexpected end of file while reading <PARAMETRIZATION> header")
+                n_param_shells = int(lines[i])
+                i += 1
+
+                for _ in range(n_param_shells):
+                    if i >= n:
+                        raise ValueError("Unexpected end of file while reading <PARAMETRIZATION> shell index")
+                    shell_idx = int(lines[i]); i += 1
+                    type_name = lines[i];      i += 1
+                    m_val     = int(lines[i]); i += 1
+                    params    = list(map(float, lines[i].split())); i += 1
+                    parametrization_raw[shell_idx] = {"type": type_name, "m": m_val, "params": params}
+
+                if i >= n or lines[i] != "</PARAMETRIZATION>":
+                    raise ValueError("Missing </PARAMETRIZATION> block")
+                i += 1
+                continue
+
             # ---------- unknown ----------
             raise ValueError(f"Unrecognized line: {line}")
 
@@ -601,6 +641,7 @@ class Exponent_Set:
             energy=energy,
             contracted=contracted,
             resulting_contraction=resulting_contraction_raw,
+            parametrization=parametrization_raw,
         )
 
     @classmethod
@@ -731,3 +772,22 @@ class Exponent_Set:
     def uncontract_all(self) -> None:
         for l in range(len(self.exponents)):
             self.uncontract_shell(l)
+
+    def apply_params(self, l: int, codec, params: ndarray, n: int) -> None:
+        """Decode params into n exponents for shell l, update the shell, and store
+        the parametrization. If n differs from the current primitive count the
+        contraction for that shell is reset to identity and resulting_contraction
+        is cleared (it is stale once exponents change)."""
+        if l < 0 or l >= len(self.exponents):
+            raise IndexError(f"Invalid shell index l={l}")
+
+        new_exps = array(codec.decode(params, n), dtype=float64)
+
+        self.exponents[l]          = new_exps
+        self.lengths[l]            = n
+        self.resulting_contraction = None
+        self.uncontract_shell(l)
+
+        self.parametrization[l] = {"type": codec.name, "m": int(codec.m), "params": list(params)}
+
+        self._ensure_descending_all()

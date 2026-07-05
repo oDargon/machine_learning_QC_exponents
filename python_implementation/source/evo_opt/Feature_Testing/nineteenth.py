@@ -92,6 +92,7 @@ if init_uncontracted.resulting_contraction is None:
 
 global_state = init_uncontracted.copy(no_energy=True)
 global_state.change_contraction(init_uncontracted.resulting_contraction)
+init_uncontracted.save(SUBMIT_DIR, "latest_full", overwrite=True)
 
 init_contracted = evaluate_initial(
     global_state, objective, WORK_DIR / "initial_contracted",
@@ -132,7 +133,7 @@ print(f"Full CSV : {FULL_CSV_FILE}")
 
 CSV_HEADER = [
     "cycle", "shell", "shell_label", "n_exponents", "popsize", "max_generations",
-    "E_before", "E_after", "dE", "exp_change_pct",
+    "E_before", "E_after", "dE", "exp_change_pct", "wall_time_sec", "cumulative_wall_time_sec",
 ]
 FULL_CSV_HEADER = ["order", "launch_cycle", "landed_cycle", "energy", "dE", "dE_total", "wall_time_sec", "cumulative_wall_time_sec", "exp_change_pct"]
 
@@ -145,7 +146,8 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
     full_csv_writer.writerow(FULL_CSV_HEADER)
     csv_f.flush()
 
-    cumulative_wall_time = 0.0
+    cumulative_wall_time       = 0.0
+    cumulative_shell_wall_time = 0.0
 
     full_csv_writer.writerow([
         0, "bootstrap", "bootstrap", f"{full_run_energies[0]:.10f}", f"{0.0:.10f}", f"{0.0:.10f}", "NA", f"{cumulative_wall_time:.2f}", f"{0.0:.4f}",
@@ -280,20 +282,21 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
                 "start_energy":           float(pre_energy),
                 "contract_frozen_shells": True,
             }
-            if extrapolated[j] is not None:
-                spec["mean_override"] = seed_j.tolist()
-
             CONFIG_PATH = INIT_DIR / "config.yaml"
             with open(CONFIG_PATH, "w") as cfg_f:
                 yaml.safe_dump(spec, cfg_f)
 
-            pre_exp_j = latest_own[j].copy()   # raw previous value, for an honest delta below
+            pre_exp_j   = latest_own[j].copy()   # raw previous value, for an honest delta below
+            shell_start = time.time()
 
             subprocess.run(
                 ["cmafex", str(CONFIG_PATH), str(INIT_DIR), str(MEM_DIR)],
                 cwd=CURRENT_OPT,
                 check=True,
             )
+
+            shell_wall_time = time.time() - shell_start
+            cumulative_shell_wall_time += shell_wall_time
 
             CYCLE_DATA = DATA_DIR / f"shell_{j}" / f"cycle_{i}"
             CYCLE_DATA.mkdir(parents=True, exist_ok=True)
@@ -316,6 +319,8 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
             log.write(f"  E_after   = {new_exp.energy:20.10f} Eh\n")
             log.write(f"  dE        = {delta_e:+20.10f} Eh\n")
             log.write(f"  exp_chg   = {delta_pct:19.4f} %\n")
+            log.write(f"  wall_time = {shell_wall_time:19.2f} s\n")
+            log.write(f"  total_time = {cumulative_shell_wall_time:18.2f} s\n")
             log.write(f"{SEP}\n\n")
             log.flush()
 
@@ -323,6 +328,7 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
                 i + 1, j, lbl, n_exp, gen_size, MAX_GENERATIONS,
                 f"{pre_energy:.10f}", f"{new_exp.energy:.10f}",
                 f"{delta_e:.10f}", f"{delta_pct:.4f}",
+                f"{shell_wall_time:.2f}", f"{cumulative_shell_wall_time:.2f}",
             ])
             csv_f.flush()
 
@@ -345,3 +351,8 @@ with open(LOG_FILE, "w") as log, open(CSV_FILE, "w", newline="") as csv_f, \
             "launch_cycle": i,
             "launch_time":  launch_time,
         })
+
+        msg = f"[Full] launched run from cycle {i + 1} state -> {full_job.job_dir}"
+        print(msg)
+        full_log.write(msg + "\n\n")
+        full_log.flush()

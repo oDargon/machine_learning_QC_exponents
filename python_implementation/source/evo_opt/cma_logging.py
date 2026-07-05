@@ -1,6 +1,7 @@
 from pathlib import Path
 from .exponent_handler import Exponent_Set
 from .opt_tools_new import exponent_primitive_difference_metrics
+from .tempering import Tempering_Codec
 from numpy import exp, float64, array
 import csv
 
@@ -23,12 +24,14 @@ class FixedCountLogger:
         start_energy: float64,
         *,
         print_to_stdout: bool = False,
+        codec: Tempering_Codec | None = None,
     ):
         self._n_shells     = n_shells
         self._active_shell = active_shell
         self._start_exp    = start_exp
         self._start_energy = start_energy
         self._print        = print_to_stdout
+        self._codec        = codec
 
         self._log_f      = open(work_dir / "cma.log", "a")
         self._csv_f      = open(work_dir / "cma_trace.csv", "w", newline="")
@@ -37,6 +40,13 @@ class FixedCountLogger:
         self._write_header()
 
     def _write_header(self) -> None:
+        if self._codec is not None:
+            self._log_f.write(
+                f"[Tempering] type=polynomial  M={self._codec.m}  N={self._codec.n}"
+                f"  shell={self._active_shell}\n"
+            )
+            self._log_f.flush()
+
         header = [
             "generation",
             "fevals",
@@ -50,8 +60,16 @@ class FixedCountLogger:
         for l in range(self._n_shells):
             header.append(f"shell_{l}_rms_x")
             header.append(f"shell_{l}_max_x")
-        for q in range(self._start_exp.lengths[self._active_shell]):
-            header.append(f"ind_sigma_l{self._active_shell}_q{q}")
+
+        if self._codec is not None:
+            for q in range(self._codec.m):
+                header.append(f"param_sigma_{q}")
+            for q in range(self._codec.m):
+                header.append(f"param_{q}")
+        else:
+            for q in range(self._start_exp.lengths[self._active_shell]):
+                header.append(f"ind_sigma_l{self._active_shell}_q{q}")
+
         header.append("max_pct_change_from_mean")
         header.append("avg_pct_change_from_mean")
         self._csv_writer.writerow(header)
@@ -89,7 +107,7 @@ class FixedCountLogger:
         per_shell_max_x     = exp(per_shell_max)
 
         indiv_sigmas = es.sigma * (es.sm.C.diagonal() ** 0.5)
-        mean_exp     = exp(es.mean)
+        mean_exp     = self._codec.decode(es.mean) if self._codec is not None else exp(es.mean)
         best_active  = array([float(v) for v in best_exp_gen.exponents[self._active_shell]], dtype=float64)
         pct_changes  = abs((best_active - mean_exp) / mean_exp) * 100.0
 
@@ -108,6 +126,9 @@ class FixedCountLogger:
             row.append(float(per_shell_max_x[l]))
         for s in indiv_sigmas:
             row.append(float(s))
+        if self._codec is not None:
+            for p in es.mean:
+                row.append(float(p))
         row.append(float(pct_changes.max()))
         row.append(float(pct_changes.mean()))
 

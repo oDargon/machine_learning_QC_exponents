@@ -3,7 +3,6 @@ import argparse
 import yaml
 import sys
 import shutil
-from numpy import array, float64
 from .exponent_handler import Exponent_Set
 from .objectives import Ground_Energy_Objective
 from .job_manager import Job_Manager_Config
@@ -86,16 +85,14 @@ def cli() -> None:
     max_generations = int(spec["max_generations"])
     threads         = int(spec["threads"])
 
-    poll_interval   = float(spec.get("poll_interval",         0.5))
-    overwrite       = bool(spec.get("overwrite",              True))
-    logging_        = bool(spec.get("logging",                False))
-    use_stopping    = bool(spec.get("use_stopping",           False))
-    contract_frozen = bool(spec.get("contract_frozen_shells", False))
-    update_cadence  = int(spec.get("update_cadence",          10))
-
-    mean_override = spec.get("mean_override", None)
-    if mean_override is not None:
-        mean_override = array(mean_override, dtype=float64)
+    poll_interval      = float(spec.get("poll_interval",         0.5))
+    overwrite          = bool(spec.get("overwrite",              True))
+    logging_           = bool(spec.get("logging",                False))
+    use_stopping       = bool(spec.get("use_stopping",           False))
+    contract_frozen    = bool(spec.get("contract_frozen_shells", False))
+    update_cadence     = int(spec.get("update_cadence",          10))
+    use_tempering      = bool(spec.get("use_tempering",          False))
+    n_tempering_params = int(spec.get("n_tempering_params",      6))
 
     cfg = Job_Manager_Config(
         executor_type        = Executor_Type.LOCAL_BASH,
@@ -137,8 +134,9 @@ def cli() -> None:
         init_state_path        = init_state,
         memory_dir             = memory_dir,
         update_cadence         = update_cadence,
-        mean_override          = mean_override,
         out_dir                = out_dir,
+        use_tempering          = use_tempering,
+        n_tempering_params     = n_tempering_params,
     )
 
 

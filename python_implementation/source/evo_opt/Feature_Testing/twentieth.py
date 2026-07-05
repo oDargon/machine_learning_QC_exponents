@@ -18,11 +18,13 @@ from evo_opt.job_manager import Job_Manager_Config
 from evo_opt.common import Executor_Type
 from evo_opt.cma_opt_2 import evaluate_initial, cma_fixed_exponent_count
 
-ACTIVE_SHELL    = 0
-GENERATION_SIZE = 10
-SIGMA           = 0.01
-MAX_GENERATIONS = 5
-THREADS         = 4
+ACTIVE_SHELL       = 0
+GENERATION_SIZE    = 10
+SIGMA              = 0.01
+MAX_GENERATIONS    = 5
+THREADS            = 4
+USE_TEMPERING      = False
+N_TEMPERING_PARAMS = 6
 
 exp_path      = SUBMIT_DIR / "Si.expo"
 template      = SUBMIT_DIR / "template.inp"
@@ -60,6 +62,11 @@ if init_uncontracted.resulting_contraction is None:
     raise RuntimeError("Initial uncontracted run produced no contraction.")
 
 L_LABELS = ["s", "p", "d", "f", "g", "h"]
+if USE_TEMPERING:
+    n_active = len(contracted.exponents[ACTIVE_SHELL])
+    print(f"Tempering           : polynomial  M={N_TEMPERING_PARAMS}  N={n_active}  shell={ACTIVE_SHELL}")
+else:
+    print(f"Tempering           : off")
 print(f"Uncontracted energy : {init_uncontracted.energy:.10f} Eh")
 print("Contraction sizes   :")
 rc = init_uncontracted.resulting_contraction
@@ -91,4 +98,6 @@ cma_fixed_exponent_count(
     logging                = True,
     contract_frozen_shells = True,
     out_dir                = SUBMIT_DIR,
+    use_tempering          = USE_TEMPERING,
+    n_tempering_params     = N_TEMPERING_PARAMS,
 )
