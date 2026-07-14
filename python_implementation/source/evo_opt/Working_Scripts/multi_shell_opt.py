@@ -17,11 +17,12 @@ from evo_opt.cma_shell_opt import Shell_Optimization
 
 _arg_parser = argparse.ArgumentParser()
 _arg_parser.add_argument("--submit-dir", type=Path, default=Path.cwd())
-_arg_parser.add_argument("--work-dir",   type=Path, default=None)
+_arg_parser.add_argument("--work-dir",   type=Path, required=True,
+                         help="scratch dir for all job I/O — keep this OFF shared/home storage on HPC")
 _args = _arg_parser.parse_args()
 
 SUBMIT_DIR = _args.submit_dir.resolve()
-WORK_DIR   = ((_args.work_dir if _args.work_dir is not None else SUBMIT_DIR) / "Optimization").resolve()
+WORK_DIR   = (_args.work_dir / "Optimization").resolve()
 sys.path.insert(0, str(SUBMIT_DIR))
 
 # ═══ USER CONFIGURATION ═══════════════════════════════════════════════════════

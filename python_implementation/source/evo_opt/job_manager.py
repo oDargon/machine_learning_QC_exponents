@@ -9,6 +9,7 @@ from .executors import executor_map
 from .common import Remote_Pullback_Policy, Executor_Type, BATCHED_EXECUTORS, REMOTE_EXECUTORS
 import time
 import shutil
+from uuid import uuid4
 
 
 
@@ -76,6 +77,12 @@ class Job_Manager:
         self.auto_run: bool               = auto_run
         self.jobs: List[Molcas_Job]       = []
         self.job_counter: int             = 0
+        # A job's name doubles as the MOLCAS Project, which keys its scratch dir
+        # ($MOLCAS_WORKDIR/$Project). Concurrent managers (one per shell, plus
+        # global evals) would otherwise all mint "job_0" and collide in the
+        # shared scratch root. This per-manager uuid prefix makes every job name
+        # unique across all managers, processes, and machines.
+        self._job_token: str              = uuid4().hex
         self.full_logging: bool           = full_logging
         self.manager_logging: bool        = manager_logging
         self.overwrite_existing: bool     = overwrite_existing
@@ -152,7 +159,7 @@ class Job_Manager:
         if name:
             job_name = name
         else:
-            job_name = f"job_{self.job_counter}"
+            job_name = f"job_{self._job_token}_{self.job_counter}"
 
         job_dir = self.group_dir / job_name
 
