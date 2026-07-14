@@ -1,6 +1,7 @@
 import sys
 import shutil
 import argparse
+import time
 from pathlib import Path
 
 _arg_parser = argparse.ArgumentParser()
@@ -16,7 +17,8 @@ from evo_opt.exponent_handler import Exponent_Set
 from evo_opt.objectives import Ground_Energy_Objective
 from evo_opt.job_manager import Job_Manager_Config
 from evo_opt.common import Executor_Type
-from evo_opt.cma_opt_2 import evaluate_initial, cma_fixed_exponent_count
+from evo_opt.cma_opt_2 import evaluate_initial
+from evo_opt.cma_shell_opt import Shell_Optimization
 
 ACTIVE_SHELL       = 0
 GENERATION_SIZE    = 10
@@ -27,8 +29,8 @@ USE_TEMPERING      = False
 N_TEMPERING_PARAMS = 6
 
 exp_path      = SUBMIT_DIR / "Si.expo"
-template      = SUBMIT_DIR / "template.inp"
-template_full = SUBMIT_DIR / "template_full.inp"
+template      = SUBMIT_DIR / "temp_cont.inp"
+template_full = SUBMIT_DIR / "temp_full.inp"
 run_scr       = SUBMIT_DIR / "run.sh"
 extract_scr   = SUBMIT_DIR / "extract.sh"
 
@@ -84,20 +86,45 @@ init_contracted = evaluate_initial(
 )
 print(f"Contracted energy   : {init_contracted.energy:.10f} Eh")
 
-cma_fixed_exponent_count(
+cma_run_dir = WORK_DIR / "cma_run"
+
+opt = Shell_Optimization(
     init_contracted,
-float(init_contracted.energy),
+    float(init_contracted.energy),
     objective,
-    work_dir               = WORK_DIR / "cma_run",
+    work_dir               = cma_run_dir,
     generation_size        = GENERATION_SIZE,
     sigma                  = SIGMA,
     max_generations        = MAX_GENERATIONS,
-    threads                = THREADS,
     active_shell           = ACTIVE_SHELL,
     overwrite              = True,
     logging                = True,
     contract_frozen_shells = True,
-    out_dir                = SUBMIT_DIR,
     use_tempering          = USE_TEMPERING,
     n_tempering_params     = N_TEMPERING_PARAMS,
 )
+opt.start(threads=THREADS)
+
+last_gen = -1
+while opt.is_running:
+    gen = opt.generation
+    if gen != last_gen and gen >= 0:
+        last_gen = gen
+        shutil.copy(cma_run_dir / "cma.log",       SUBMIT_DIR / "cma.log")
+        shutil.copy(cma_run_dir / "cma_trace.csv", SUBMIT_DIR / "cma_trace.csv")
+        state = opt.get_state()
+        if state["best_exp"] is not None:
+            out_exp        = state["best_exp"].copy(no_energy=True)
+            out_exp.energy = float(state["best_energy"])
+            out_exp.save(SUBMIT_DIR, "best", overwrite=True)
+    time.sleep(0.5)
+
+opt.wait()
+
+shutil.copy(cma_run_dir / "cma.log",       SUBMIT_DIR / "cma.log")
+shutil.copy(cma_run_dir / "cma_trace.csv", SUBMIT_DIR / "cma_trace.csv")
+state = opt.get_state()
+if state["best_exp"] is not None:
+    out_exp        = state["best_exp"].copy(no_energy=True)
+    out_exp.energy = float(state["best_energy"])
+    out_exp.save(SUBMIT_DIR, "best", overwrite=True)
