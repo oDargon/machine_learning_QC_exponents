@@ -773,21 +773,29 @@ class Exponent_Set:
         for l in range(len(self.exponents)):
             self.uncontract_shell(l)
 
-    def apply_params(self, l: int, codec, params: ndarray, n: int) -> None:
-        """Decode params into n exponents for shell l, update the shell, and store
-        the parametrization. If n differs from the current primitive count the
-        contraction for that shell is reset to identity and resulting_contraction
-        is cleared (it is stale once exponents change)."""
+    def set_shell_exponents(self, l: int, values: Sequence[float] | ndarray) -> None:
+        """Canonical in-place replacement of shell l's exponents (count may change).
+        Resets that shell to an uncontracted identity, clears the now-stale
+        resulting_contraction, and re-sorts descending. Prefer this over direct
+        assignment to self.exponents[l], which bypasses sorting and contraction
+        bookkeeping."""
         if l < 0 or l >= len(self.exponents):
             raise IndexError(f"Invalid shell index l={l}")
 
-        new_exps = array(codec.decode(params, n), dtype=float64)
+        new_exps = array(values, dtype=float64)
+        if new_exps.ndim != 1:
+            raise ValueError(f"exponents for shell {l} must be 1D")
 
         self.exponents[l]          = new_exps
-        self.lengths[l]            = n
+        self.lengths[l]            = new_exps.shape[0]
         self.resulting_contraction = None
         self.uncontract_shell(l)
-
-        self.parametrization[l] = {"type": codec.name, "m": int(codec.m), "params": list(params)}
-
         self._ensure_descending_all()
+
+    def apply_params(self, l: int, codec, params: ndarray, n: int) -> None:
+        """Decode params into n exponents for shell l via set_shell_exponents,
+        then record the parametrization metadata. If n differs from the current
+        primitive count the contraction for that shell is reset to identity and
+        resulting_contraction is cleared (it is stale once exponents change)."""
+        self.set_shell_exponents(l, codec.decode(params, n))
+        self.parametrization[l] = {"type": codec.name, "m": int(codec.m), "params": list(params)}

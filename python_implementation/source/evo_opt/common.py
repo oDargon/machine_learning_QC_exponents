@@ -1,6 +1,12 @@
 from enum import Enum
 
 
+# Spectroscopic angular-momentum labels, l = 0 .. 15 (the max MOLCAS handles).
+# Alphabetical after 'f', omitting 'j', plus 'p'/'s' which are already used for
+# lower l. shell_label() callers should fall back to str(l) beyond this range.
+L_LABELS = ["s", "p", "d", "f", "g", "h", "i", "k", "l", "m", "n", "o", "q", "r", "t", "u"]
+
+
 class Job_Status(Enum):
     CREATED   = "created"
     PREPARED  = "prepared"

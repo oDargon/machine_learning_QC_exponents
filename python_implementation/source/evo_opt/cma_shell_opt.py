@@ -97,6 +97,12 @@ class Shell_Optimization:
     def is_paused(self) -> bool:
         return not self._pause_event.is_set() and self.is_running
 
+    @property
+    def exception(self) -> Exception | None:
+        """The exception that killed the worker thread, or None. Only ever set on
+        a genuine crash — a clean stop() or normal completion leaves it None."""
+        return self._exception
+
     def start(self, threads: int = 1) -> None:
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError("Shell_Optimization is already running")
@@ -203,14 +209,13 @@ class Shell_Optimization:
                     new_exp = root_exp.copy(no_energy=True)
                     if codec:
                         new_exp.apply_params(self._active_shell, codec, vec, n=n_active)
-                        if not self._contract_frozen_shells:
-                            new_exp.uncontract_all()
                     else:
-                        new_exp.exponents[self._active_shell] = array(exp(vec), dtype=float64)
-                        if self._contract_frozen_shells:
-                            new_exp.uncontract_shell(self._active_shell)
-                        else:
-                            new_exp.uncontract_all()
+                        new_exp.set_shell_exponents(self._active_shell, exp(vec))
+                    # apply_params / set_shell_exponents already uncontract the active
+                    # shell; when frozen shells stay contracted that's all we want,
+                    # otherwise uncontract everything.
+                    if not self._contract_frozen_shells:
+                        new_exp.uncontract_all()
                     exp_objects.append(new_exp)
 
                 results     = self._objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)
