@@ -26,7 +26,7 @@ ACTIVE_SHELL    = 0
 GENERATOR       = "polynomial"
 PARAMS          = [9.5, -1.4, 0.03, 0.0, 0.0, 0.0]   # M tempering params — edit these
 A               = 6     # smallest N to evaluate
-B               = 30    # largest N to evaluate
+B               = 30    # largest N to evaluate a
 USE_CONTRACTION = True  # True: bootstrap GENANO contractions and keep frozen shells contracted
 THREADS         = 4
 # ---- end user config ----

@@ -43,6 +43,10 @@ MAX_GENERATIONS        = 50   # target: run until every shell has reached this m
 GEN_CEILING_MULTIPLIER = 5    # hard per-shell ceiling = MAX_GENERATIONS * this; a fast shell
                               #   may run ahead up to the ceiling while slower shells catch up
                               #   (assumes no shell is more than this many times slower)
+USE_CONTRACTION        = True  # True : freeze + contract the other shells while optimizing one
+                               #        (uses TEMPLATE_CONT) — cheaper per eval
+                               # False: optimize with everything fully uncontracted
+                               #        (uses TEMPLATE_FULL). Global evals are always full.
 USE_TEMPERING          = False
 N_TEMPERING_PARAMS     = 6
 
@@ -129,17 +133,28 @@ init_source = basis.copy(no_energy=True)
 init_source.uncontract_all()   # guarantee a fully uncontracted starting point regardless of input .expo
 init_uncontracted = evaluate_initial(init_source, full_objective, WORK_DIR / "initial_uncontracted", threads=1)
 
-if init_uncontracted.resulting_contraction is None:
-    raise RuntimeError("Initial uncontracted run produced no contraction.")
-
 print(f"Uncontracted energy : {init_uncontracted.energy:.10f} Eh")
-print("Contraction sizes   :")
-rc = init_uncontracted.resulting_contraction
-for i in range(len(rc)):
-    print(f"  shell {i} ({L_LABELS[i]}): {rc[i].shape[0]} <- {rc[i].shape[1]}")
 
-contracted_base = init_uncontracted.copy(no_energy=True)
-contracted_base.change_contraction(init_uncontracted.resulting_contraction)
+# `base` is the frozen backdrop each shell optimizes against, and the source for
+# the global evals. With contraction it carries the GENANO contraction on the
+# frozen shells; without, it stays fully uncontracted. Either way the per-shell
+# optimizers use the same TEMPLATE_CONT objective — only contract_frozen_shells
+# (and whether base is contracted) differs.
+if USE_CONTRACTION:
+    if init_uncontracted.resulting_contraction is None:
+        raise RuntimeError("Initial uncontracted run produced no contraction.")
+    print("Contraction sizes   :")
+    rc = init_uncontracted.resulting_contraction
+    for i in range(len(rc)):
+        print(f"  shell {i} ({L_LABELS[i]}): {rc[i].shape[0]} <- {rc[i].shape[1]}")
+    base = init_uncontracted.copy(no_energy=True)
+    base.change_contraction(init_uncontracted.resulting_contraction)
+    contract_frozen = True
+else:
+    print("Contraction         : off (shells optimized fully uncontracted)")
+    base = init_uncontracted.copy(no_energy=True)
+    base.uncontract_all()
+    contract_frozen = False
 
 # ─── initialise per-shell optimizers ──────────────────────────────────────────
 
@@ -158,12 +173,14 @@ for shell_idx in range(_n_flags):
 
     shell_n_tempering = min(N_TEMPERING_PARAMS, n_exp) if USE_TEMPERING else N_TEMPERING_PARAMS
 
-    shell_start = contracted_base.copy(no_energy=True)
-    shell_start.uncontract_shell(shell_idx)
+    shell_start = base.copy(no_energy=True)
+    if USE_CONTRACTION:
+        shell_start.uncontract_shell(shell_idx)   # active shell free, frozen shells stay contracted
+    # else: base is already fully uncontracted
 
     init_result = evaluate_initial(
         shell_start, objective, WORK_DIR / f"initial_shell_{shell_idx}",
-        threads=1, contract_frozen_shells=True,   # single job — extra threads would be idle
+        threads=1, contract_frozen_shells=contract_frozen,   # single job — extra threads would be idle
     )
     print(f"  shell {shell_idx} ({lbl}) initial energy : {init_result.energy:.10f} Eh")
 
@@ -178,7 +195,7 @@ for shell_idx in range(_n_flags):
         active_shell           = shell_idx,
         overwrite              = True,
         logging                = True,
-        contract_frozen_shells = True,
+        contract_frozen_shells = contract_frozen,
         use_tempering          = USE_TEMPERING,
         n_tempering_params     = shell_n_tempering,
     )
@@ -187,6 +204,7 @@ if not optimizers:
     raise RuntimeError("No shells to optimize after filtering.")
 
 print(f"\nOptimizing shells : {sorted(optimizers)}")
+print(f"Contraction       : {'on (frozen shells contracted)' if USE_CONTRACTION else 'off (fully uncontracted)'}")
 print(f"Target gens       : {MAX_GENERATIONS} (stop once all shells reach this)")
 print(f"Per-shell ceiling : {GEN_CEILING} gens")
 print(f"Warmup            : {GLOBAL_EVAL_WARMUP_GENS} gens before first global eval")
@@ -218,7 +236,7 @@ log_f = open(SUBMIT_DIR / "global.log", "w")
 csv_w = csv.writer(csv_f)
 
 csv_w.writerow(
-    ["eval_idx", "time_sec", "global_energy", "delta_e"]
+    ["eval_idx", "time_sec", "total_molcas_jobs", "global_energy", "delta_e"]
     + [f"shell_{idx}_gen_at_trigger" for idx in sorted(optimizers)]
 )
 csv_f.flush()
@@ -226,7 +244,7 @@ csv_f.flush()
 
 def collect_combined() -> Exponent_Set:
     """Fully-uncontracted basis with each optimized shell's current best exponents."""
-    combined = contracted_base.copy(no_energy=True)
+    combined = base.copy(no_energy=True)
     combined.uncontract_all()
     for idx in sorted(optimizers):
         state = optimizers[idx].get_state()
@@ -235,12 +253,23 @@ def collect_combined() -> Exponent_Set:
     return combined
 
 
+def total_molcas_jobs(gens: dict, n_full_evals: int) -> int:
+    """Freeze-frame count of MOLCAS jobs completed:
+      - shell optimizers: for each optimized shell, completed generations
+        (gen index + 1) times its population size
+      - full (global) evals: one job each
+    Excludes the few fixed single-job startup evals (bootstrap + per-shell init)."""
+    shell_jobs = sum(max(gens.get(idx, -1) + 1, 0) * _gen_sizes[idx] for idx in optimizers)
+    return shell_jobs + n_full_evals
+
+
 def global_eval_worker(eval_idx, snapshot, trigger_gens):
     eval_dir = GLOBAL_EVAL_DIR / f"eval_{eval_idx:04d}"
     results  = full_objective.evaluate_batch([snapshot], work_dir=eval_dir, threads=1)
     energy   = float(results[0].energy)
     elapsed  = time.time() - t0
     delta_e  = energy - E0
+    jobs_done = total_molcas_jobs(trigger_gens, eval_idx + 1)   # +1: this full eval just finished
 
     with best_lock:
         if energy < best_state["best_energy"]:
@@ -251,7 +280,7 @@ def global_eval_worker(eval_idx, snapshot, trigger_gens):
         best_so_far = best_state["best_energy"]
 
         line = (
-            f"[GlobalEval {eval_idx:4d}] T {elapsed:.1f}s | "
+            f"[GlobalEval {eval_idx:4d}] T {elapsed:.1f}s | Jobs {jobs_done} | "
             f"E {energy:.10f} | ΔE {delta_e:+.8f} | BestE {best_so_far:.10f}"
         )
         print(line)
@@ -259,7 +288,7 @@ def global_eval_worker(eval_idx, snapshot, trigger_gens):
         log_f.flush()
 
         csv_w.writerow(
-            [eval_idx, elapsed, energy, delta_e]
+            [eval_idx, elapsed, jobs_done, energy, delta_e]
             + [trigger_gens.get(idx, -1) for idx in sorted(optimizers)]
         )
         csv_f.flush()
@@ -358,8 +387,13 @@ for t in active_evals:
 final_gens = {idx: optimizers[idx].get_state()["generation"] for idx in sorted(optimizers)}
 global_eval_worker(trigger_idx, collect_combined(), final_gens)
 
+summary = (
+    f"[Summary] total walltime {time.time() - t0:.1f}s | "
+    f"total MOLCAS jobs {total_molcas_jobs(final_gens, trigger_idx + 1)} | "
+    f"best E {best_state['best_energy']:.10f} (ΔE {best_state['best_energy'] - E0:+.10f})"
+)
+print(summary)
+log_f.write(summary + "\n")
+
 csv_f.close()
 log_f.close()
-
-print(f"\nBest global energy : {best_state['best_energy']:.10f} Eh"
-      f"  (ΔE = {best_state['best_energy'] - E0:+.10f})")
