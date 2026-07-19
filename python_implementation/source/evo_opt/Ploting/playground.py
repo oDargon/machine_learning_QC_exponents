@@ -15,3 +15,13 @@ plot_shell_densities(
     [a, d, e, b],
     names=["base", "m1", "p4", "all"],
 )
+
+
+# s1 = Exponent_Set.from_file(HERE / "Se_6dir_orig.expo")
+# s2 = Exponent_Set.from_file(HERE / "Se_6dir_opt.expo")
+# s3 = Exponent_Set.from_file(HERE / "Se_6dir_opt_mix.expo")
+
+# plot_shell_densities(
+#     [s1, s2, s3],
+#     names=["base", "opt", "mix"],
+# )

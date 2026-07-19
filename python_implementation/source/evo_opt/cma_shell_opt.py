@@ -2,6 +2,7 @@ from pathlib import Path
 from threading import Thread, Lock, Event
 from numpy import exp, log, float64, ndarray, array
 from numpy.linalg import eigvalsh
+from numpy.random import normal as _normal
 from .exponent_handler import Exponent_Set
 from .objectives import Objective
 from .cma_logging import FixedCountLogger
@@ -168,6 +169,87 @@ class Shell_Optimization:
             )
 
             x0 = codec.encode(self._start_exp.exponents[self._active_shell]) if codec else log(self._start_exp.exponents[self._active_shell])
+
+            if len(x0) == 1:
+                # ── 1-D: (1+λ)-ES generation loop ────────────────────────────────
+                mean_1d              = float(x0[0])
+                sigma_1d             = self._sigma
+                prev_best            = self._start_energy
+                best_energy_overall  = self._start_energy
+                best_exp_overall     = self._start_exp.copy(no_energy=True)
+                recent_best_energies = []
+                root_exp             = self._start_exp.copy(no_energy=True)
+
+                for gen in range(self._max_generations):
+                    batch_dir = work_dir / f"batch_{gen}"
+
+                    if self._stop_event.is_set():
+                        break
+                    self._pause_event.wait()
+                    if self._stop_event.is_set():
+                        break
+
+                    with self._lock:
+                        pending_root           = self._pending_root_exp
+                        self._pending_root_exp = None
+                    if pending_root is not None:
+                        root_exp = pending_root.copy(no_energy=True)
+
+                    candidates  = [mean_1d + sigma_1d * _normal() for _ in range(self._generation_size)]
+                    exp_objects = []
+                    for i in range(len(candidates)):
+                        new_exp = root_exp.copy(no_energy=True)
+                        if codec:
+                            new_exp.apply_params(self._active_shell, codec, array([candidates[i]]), n=n_active)
+                        else:
+                            new_exp.set_shell_exponents(self._active_shell, exp(array([candidates[i]])))
+                        if not self._contract_frozen_shells:
+                            new_exp.uncontract_all()
+                        exp_objects.append(new_exp)
+
+                    results  = self._objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)
+                    energies = array([r.energy for r in results], dtype=float64)
+                    best_idx = int(energies.argmin())
+                    best_e   = energies[best_idx]
+
+                    mean_1d = candidates[best_idx]
+                    if best_e < prev_best:
+                        sigma_1d *= 1.52
+                        prev_best = best_e
+                    else:
+                        sigma_1d *= 0.9
+                    sigma_1d = max(1e-10, sigma_1d)
+
+                    if best_e < best_energy_overall:
+                        best_energy_overall = best_e
+                        best_exp_overall    = results[best_idx].copy(no_energy=True)
+
+                    results[best_idx].copy(no_energy=True).save(best_dir, f"gen_{gen:03d}")
+
+                    recent_best_energies.append(float(best_e))
+                    if len(recent_best_energies) > 5:
+                        recent_best_energies.pop(0)
+
+                    with self._lock:
+                        self._best_exp       = best_exp_overall
+                        self._best_energy    = best_energy_overall
+                        self._generation     = gen
+                        self._sigma_snapshot = sigma_1d
+                        self._mean_snapshot  = array([mean_1d])
+
+                    stop_reason = None
+                    if sigma_1d < 1e-4:
+                        stop_reason = "sigma < 1e-4"
+                    elif sigma_1d < 1e-3 and len(recent_best_energies) == 5:
+                        rounded = [round(e, 5) for e in recent_best_energies]
+                        if len(set(rounded)) == 1:
+                            stop_reason = "sigma < 1e-3 and last 5 best energies equal to 5 decimals"
+                    if stop_reason is not None and self._use_stopping:
+                        break
+
+                return
+
+            # ── N-D: CMA-ES ──────────────────────────────────────────────────────
             es = cma.CMAEvolutionStrategy(x0, self._sigma, {'popsize': self._generation_size})
 
             if self._cma_state is not None:
