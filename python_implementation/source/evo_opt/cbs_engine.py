@@ -26,6 +26,8 @@ def _one_n(
     threads_per_shell:     int,
     contract_frozen_shells: bool,
     prev_params            = None,
+    *,
+    use_stopping: bool     = False,
 ) -> tuple:
     codec      = from_registry(generator, m=m, n=n)
     work_start = contracted_base.copy(no_energy=True)
@@ -59,9 +61,17 @@ def _one_n(
         contract_frozen_shells = contract_frozen_shells,
         use_tempering          = True,
         n_tempering_params     = m,
+        use_stopping           = use_stopping,   # early-stop once last 5 best energies agree to 1e-6
     )
     opt.start(threads=threads_per_shell)
     opt.wait()
+
+    if opt.exception is not None:
+        print(
+            f"  [WARNING] shell {shell_idx} N={n}: sub-optimization crashed "
+            f"({opt.exception!r}); falling back to initial energy for this point.",
+            flush=True,
+        )
 
     state     = opt.get_state()
     e_final   = float(state["best_energy"]) if state["best_energy"] is not None else e_initial
@@ -80,7 +90,7 @@ def _one_n(
     return e_initial, e_final, gen_done, sigma_fin, pct_change, final_exps, mean_out
 
 
-def _write_csv_row(writer, shell_idx, lbl, n, e_i, e_f, n_delta, sig, pct, fexps, params):
+def _write_csv_row(writer, shell_idx, lbl, n, e_i, e_f, n_delta, sig, pct, gens, fexps, params, m, max_n):
     row = [
         shell_idx,
         lbl,
@@ -91,14 +101,25 @@ def _write_csv_row(writer, shell_idx, lbl, n, e_i, e_f, n_delta, sig, pct, fexps
         f"{n_delta:.6e}" if n_delta is not None else "",
         f"{sig:.6e}" if sig is not None else "",
         f"{pct:.4f}"  if pct is not None else "",
+        gens,
     ]
-    if fexps is not None:
-        for v in fexps:
-            row.append(f"{float(v):.10e}")
-    if params is not None:
-        for v in params:
-            row.append(f"{float(v):.10e}")
+    # exponents: variable count (= N), padded with blanks to max_n so the columns
+    # stay aligned with the exp_1..exp_max header
+    evals = list(fexps) if fexps is not None else []
+    for i in range(max_n):
+        row.append(f"{float(evals[i]):.10e}" if i < len(evals) else "")
+    # params: fixed width M, so they land in stable param_1..param_M columns
+    pvals = list(params) if params is not None else []
+    for i in range(m):
+        row.append(f"{float(pvals[i]):.10e}" if i < len(pvals) else "")
     writer.writerow(row)
+
+
+def _build_header(m: int, max_n: int) -> list:
+    header = ["shell", "l", "N", "E_initial", "E_final", "delta_E", "delta_N", "sigma_final", "mean_exp_pct_change", "gens_to_converge"]
+    header += [f"exp_{i + 1}"   for i in range(max_n)]
+    header += [f"param_{i + 1}" for i in range(m)]
+    return header
 
 
 def run_cbs(
@@ -113,13 +134,14 @@ def run_cbs(
     *,
     generator:             str   = "polynomial",
     m:                     int   = 6,
-    phase1_gens:           int   = 10,
-    phase2_gens:           int   = 5,
+    phase1_max_gens:       int   = 10,
+    phase2_max_gens:       int   = 5,
     sigma:                 float = 0.1,
     generation_size:       int   = 6,
     total_threads:         int   = 1,
     threads_per_shell:     int   = 1,
     contract_frozen_shells: bool = True,
+    use_stopping:          bool  = False,
 ) -> None:
     if len(A) != len(shells):
         raise ValueError(f"A must have {len(shells)} entries, got {len(A)}")
@@ -138,10 +160,12 @@ def run_cbs(
     n_done       = [0]
 
     total_n_points = 0
+    max_n_global   = 0   # widest exponent row across all shells, for CSV column padding
     for i in range(len(shells)):
         a_eff_i = max(A[i], 1)
         b_eff_i = B[i] + max(0, a_eff_i - A[i])
         total_n_points += b_eff_i - a_eff_i + 1
+        max_n_global    = max(max_n_global, b_eff_i)
 
     _sem   = Semaphore(n_slots)
     _lock  = Lock()
@@ -174,8 +198,9 @@ def run_cbs(
             e_i, e_f, gen, sig, pct, fexps, mean_out = _one_n(
                 shell_idx, n_start, p1_base, m,
                 objective, work_dir / "phase1", generator,
-                sigma, generation_size, phase1_gens,
+                sigma, generation_size, phase1_max_gens,
                 threads_per_shell, contract_frozen_shells,
+                use_stopping=use_stopping,
             )
         with _lock:
             phase1_results[shell_idx]  = (e_i, e_f, gen, sig, pct, fexps, mean_out)
@@ -224,6 +249,23 @@ def run_cbs(
     for i in range(len(shells)):
         shell_rows[shells[i]] = []
 
+    # ── live CSV: each point flushed the moment it completes, so a crash/kill
+    #    mid-sweep still leaves everything computed so far. Rows land in sweep
+    #    order (not sorted) and delta_N is blank — the sorted human-readable CSV
+    #    written at the end fills that in. ─────────────────────────────────────
+    live_path = csv_dir / "cbs_results_live.csv"
+    live_f    = open(live_path, "w", newline="")
+    live_w    = csv.writer(live_f)
+    live_w.writerow([f"# LIVE (crash-safe, unsorted)  generator={generator}  M={m}  phase1_max_gens={phase1_max_gens}  phase2_max_gens={phase2_max_gens}  use_stopping={use_stopping}"])
+    live_w.writerow(_build_header(m, max_n_global))
+    live_f.flush()
+    _csv_lock = Lock()
+
+    def _write_live(shell_idx, lbl, n, e_i, e_f, sig, pct, gen, fexps, params):
+        with _csv_lock:
+            _write_csv_row(live_w, shell_idx, lbl, n, e_i, e_f, None, sig, pct, max(gen + 1, 0), fexps, params, m, max_n_global)
+            live_f.flush()
+
     def _sweep_worker(shell_idx, a_bound, b_bound, phase1_mean):
         n_start = len(exp.exponents[shell_idx])
         a_eff   = max(a_bound, 1)
@@ -245,13 +287,15 @@ def run_cbs(
                 e_i, e_f, gen, sig, pct, fexps, prev_params = _one_n(
                     shell_idx, n, p2_base, m,
                     objective, work_dir / "phase2", generator,
-                    sigma, generation_size, phase2_gens,
+                    sigma, generation_size, phase2_max_gens,
                     threads_per_shell, contract_frozen_shells,
                     prev_params,
+                    use_stopping=use_stopping,
                 )
             if n == n_start:
                 params_n_start = prev_params
-            rows.append((n, e_i, e_f, sig, pct, fexps, prev_params))
+            rows.append((n, e_i, e_f, sig, pct, fexps, prev_params, gen))
+            _write_live(shell_idx, lbl, n, e_i, e_f, sig, pct, gen, fexps, prev_params)
             with _lock:
                 total_fevals[0] += 1 + generation_size * max(0, gen + 1)
                 n_done[0] += 1
@@ -269,11 +313,13 @@ def run_cbs(
                 e_i, e_f, gen, sig, pct, fexps, prev_params = _one_n(
                     shell_idx, n, p2_base, m,
                     objective, work_dir / "phase2", generator,
-                    sigma, generation_size, phase2_gens,
+                    sigma, generation_size, phase2_max_gens,
                     threads_per_shell, contract_frozen_shells,
                     prev_params,
+                    use_stopping=use_stopping,
                 )
-            rows.append((n, e_i, e_f, sig, pct, fexps, prev_params))
+            rows.append((n, e_i, e_f, sig, pct, fexps, prev_params, gen))
+            _write_live(shell_idx, lbl, n, e_i, e_f, sig, pct, gen, fexps, prev_params)
             with _lock:
                 total_fevals[0] += 1 + generation_size * max(0, gen + 1)
                 n_done[0] += 1
@@ -297,21 +343,26 @@ def run_cbs(
     for t in p2_threads:
         t.join()
 
-    # ── write CSV: one block per shell, N sorted low→high ────────────────────
+    live_f.close()
+
+    # ── write the human-readable CSV: one block per shell, N sorted low→high.
+    #    Only reached on a successful run — the live CSV is the crash record. ──
     csv_path = csv_dir / "cbs_results.csv"
     with open(csv_path, "w", newline="") as csv_f:
         writer = csv.writer(csv_f)
         elapsed = time.time() - t_start
-        writer.writerow([f"# total_time={elapsed:.1f}s  total_fevals={total_fevals[0]}  generator={generator}  M={m}  phase1_gens={phase1_gens}  phase2_gens={phase2_gens}"])
-        writer.writerow(["shell", "l", "N", "E_initial", "E_final", "delta_E", "delta_N", "sigma_final", "mean_exp_pct_change", "exponents...", "params..."])
+        writer.writerow([f"# total_time={elapsed:.1f}s  total_fevals={total_fevals[0]}  generator={generator}  M={m}  phase1_max_gens={phase1_max_gens}  phase2_max_gens={phase2_max_gens}  use_stopping={use_stopping}"])
+        writer.writerow(_build_header(m, max_n_global))
         for i in range(len(shells)):
             s    = shells[i]
             lbl  = L_LABELS[s]
             rows = sorted(shell_rows[s], key=lambda r: r[0])
             for j in range(len(rows)):
-                n, e_i, e_f, sig, pct, fexps, params = rows[j]
+                n, e_i, e_f, sig, pct, fexps, params, gen = rows[j]
                 n_delta = None if j == 0 else e_f - rows[j - 1][2]
-                _write_csv_row(writer, s, lbl, n, e_i, e_f, n_delta, sig, pct, fexps, params)
+                iters   = max(gen + 1, 0)   # generations actually run (gen is 0-based, -1 if none)
+                _write_csv_row(writer, s, lbl, n, e_i, e_f, n_delta, sig, pct, iters, fexps, params, m, max_n_global)
 
-    print(f"\nCSV: {csv_path}")
+    print(f"\nCSV (sorted): {csv_path}")
+    print(f"CSV (live)  : {live_path}")
     print("All shells done.")

@@ -31,13 +31,14 @@ UP                = 2                   # steps above N_start (same for all shel
 
 GENERATOR         = "polynomial"
 M                 = 6    # polynomial params per shell
-PHASE1_GENS       = 10   # CMA generations in Phase 1 (initial optimisation at N_start)
-PHASE2_GENS       = 10   # CMA generations at each N in Phase 2 (CBS sweep)
+PHASE1_MAX_GENS   = 10   # max CMA generations in Phase 1 (initial optimisation at N_start)
+PHASE2_MAX_GENS   = 10   # max CMA generations at each N in Phase 2 (CBS sweep)
 SIGMA             = 0.1
 GENERATION_SIZE   = 6
 TOTAL_THREADS     = 6
 THREADS_PER_SHELL = 3
 USE_CONTRACTION   = True
+USE_STOPPING      = True   # early-stop a sub-optimisation once its last 5 best energies agree to 1e-6
 
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
@@ -85,13 +86,14 @@ run_cbs(
     B         = B,
     generator             = GENERATOR,
     m                     = M,
-    phase1_gens           = PHASE1_GENS,
-    phase2_gens           = PHASE2_GENS,
+    phase1_max_gens       = PHASE1_MAX_GENS,
+    phase2_max_gens       = PHASE2_MAX_GENS,
     sigma                 = SIGMA,
     generation_size       = GENERATION_SIZE,
     total_threads         = TOTAL_THREADS,
     threads_per_shell     = THREADS_PER_SHELL,
     contract_frozen_shells = USE_CONTRACTION,
+    use_stopping          = USE_STOPPING,
 )
 
 shutil.copy(CSV_DIR / "cbs_results.csv", SUBMIT_DIR / "cbs_results.csv")

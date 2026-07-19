@@ -12,6 +12,12 @@ import time
 import cma
 
 
+def _last5_converged(recent_best_energies: list, tol: float = 1e-6) -> bool:
+    """Simple early-stop test: the last 5 generation-best energies all agree to
+    within `tol`. Only fires once 5 have accumulated."""
+    return len(recent_best_energies) == 5 and (max(recent_best_energies) - min(recent_best_energies)) <= tol
+
+
 class Shell_Optimization:
 
     def __init__(
@@ -237,14 +243,7 @@ class Shell_Optimization:
                         self._sigma_snapshot = sigma_1d
                         self._mean_snapshot  = array([mean_1d])
 
-                    stop_reason = None
-                    if sigma_1d < 1e-4:
-                        stop_reason = "sigma < 1e-4"
-                    elif sigma_1d < 1e-3 and len(recent_best_energies) == 5:
-                        rounded = [round(e, 5) for e in recent_best_energies]
-                        if len(set(rounded)) == 1:
-                            stop_reason = "sigma < 1e-3 and last 5 best energies equal to 5 decimals"
-                    if stop_reason is not None and self._use_stopping:
+                    if self._use_stopping and _last5_converged(recent_best_energies):
                         break
 
                 return
@@ -326,16 +325,8 @@ class Shell_Optimization:
                     self._sigma_snapshot = es.sigma
                     self._mean_snapshot  = es.mean.copy()
 
-                stop_reason = None
-                if es.sigma < 1e-4:
-                    stop_reason = "sigma < 1e-4"
-                elif es.sigma < 1e-3 and len(recent_best_energies) == 5:
-                    rounded = [round(e, 5) for e in recent_best_energies]
-                    if len(set(rounded)) == 1:
-                        stop_reason = "sigma < 1e-3 and last 5 best energies equal to 5 decimals"
-
-                if stop_reason is not None and self._use_stopping:
-                    logger.log_stop(stop_reason, gen, float(best_energy), es)
+                if self._use_stopping and _last5_converged(recent_best_energies):
+                    logger.log_stop("last 5 best energies within 1e-6", gen, float(best_energy), es)
                     break
 
         except Exception as exc:

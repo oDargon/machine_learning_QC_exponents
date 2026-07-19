@@ -28,18 +28,18 @@ sys.path.insert(0, str(SUBMIT_DIR))
 # ═══ USER CONFIGURATION ═══════════════════════════════════════════════════════
 
 # --- input files (looked up in the submit dir) ---
-EXPO_FILE      = "Si.expo"
+EXPO_FILE      = "Ru.expo"
 TEMPLATE_CONT  = "temp_cont.inp"    # contracted frozen shells
 TEMPLATE_FULL  = "temp_full.inp"    # fully uncontracted
 RUN_SCRIPT     = "run.sh"
 EXTRACT_SCRIPT = "extract.sh"
 
 # --- per-shell optimization ---
-OPTIMIZE_FLAGS         = [1, 1, 1]     # 1 = optimize, 0 = freeze; may be shorter than n_shells
-GENERATION_SIZE        = [10, 10, 10]  # int, or one entry per OPTIMIZE_FLAGS entry
-THREADS_PER_SHELL      = [2, 2, 2]     # int, or one entry per OPTIMIZE_FLAGS entry
-SIGMA                  = 0.01
-MAX_GENERATIONS        = 50   # target: run until every shell has reached this many gens
+OPTIMIZE_FLAGS         = [1, 1, 1, 1, 1, 1]  # 1 = optimize, 0 = freeze; may be shorter than n_shells
+GENERATION_SIZE        = [6, 6, 6, 6, 6, 6]  # int, or one entry per OPTIMIZE_FLAGS entry
+THREADS_PER_SHELL      = [6, 6, 6, 6, 6, 6]  # int, or one entry per OPTIMIZE_FLAGS entry
+SIGMA                  = 0.1
+MAX_GENERATIONS        = 300  # target: run until every shell has reached this many gens
 GEN_CEILING_MULTIPLIER = 5    # hard per-shell ceiling = MAX_GENERATIONS * this; a fast shell
                               #   may run ahead up to the ceiling while slower shells catch up
                               #   (assumes no shell is more than this many times slower)
@@ -47,7 +47,7 @@ USE_CONTRACTION        = True  # True : freeze + contract the other shells while
                                #        (uses TEMPLATE_CONT) — cheaper per eval
                                # False: optimize with everything fully uncontracted
                                #        (uses TEMPLATE_FULL). Global evals are always full.
-USE_TEMPERING          = False
+USE_TEMPERING          = True
 N_TEMPERING_PARAMS     = 6
 
 # --- global (fully-uncontracted) evaluations ---
@@ -59,7 +59,7 @@ GLOBAL_EVAL_SPACING_GENS = 2   # all shells must advance this many gens between 
 # Feed the converged global contraction back to every shell optimizer as its new
 # root, so each shell sees the other shells' improvements instead of optimizing
 # against a frozen initial guess.
-ENABLE_CROSS_SHELL      = True
+ENABLE_CROSS_SHELL      = False
 CROSS_SHELL_WARMUP_GENS = 20   # all shells must reach this many gens before coupling starts
 
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
