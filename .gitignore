@@ -98,4 +98,5 @@ python_implementation/Source/F_ground_test_prop
 python_implementation/Source/FCa4_ground_test_prop
 python_implementation/Small_work/*
 python_implementation/Plotting
+python_implementation/source/evo_opt/Feature_Testing/data/*
 F_contract_v_not_test
