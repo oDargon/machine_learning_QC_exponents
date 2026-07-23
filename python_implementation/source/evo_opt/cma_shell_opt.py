@@ -38,6 +38,7 @@ class Shell_Optimization:
         contract_frozen_shells: bool  = False,
         use_tempering: bool           = False,
         n_tempering_params: int       = 6,
+        seed: int | None              = None,
     ) -> None:
         self._start_exp              = start_exp
         self._start_energy           = start_energy
@@ -54,6 +55,7 @@ class Shell_Optimization:
         self._contract_frozen_shells = contract_frozen_shells
         self._use_tempering          = use_tempering
         self._n_tempering_params     = n_tempering_params
+        self._seed                   = seed
 
         self._lock        = Lock()
         self._stop_event  = Event()
@@ -267,7 +269,10 @@ class Shell_Optimization:
                 return
 
             # ── N-D: CMA-ES ──────────────────────────────────────────────────────
-            es = cma.CMAEvolutionStrategy(x0, self._sigma, {'popsize': self._generation_size})
+            cma_opts = {'popsize': self._generation_size}
+            if self._seed is not None:
+                cma_opts['seed'] = self._seed
+            es = cma.CMAEvolutionStrategy(x0, self._sigma, cma_opts)
 
             if self._cma_state is not None:
                 es.mean  = self._cma_state[0]
