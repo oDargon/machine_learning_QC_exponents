@@ -65,6 +65,7 @@ class Shell_Optimization:
         self._generation     = -1
         self._sigma_snapshot = None
         self._mean_snapshot  = None
+        self._history        = []   # per-generation trajectory records (see history property)
 
         self._pending_root_exp = None
 
@@ -109,6 +110,15 @@ class Shell_Optimization:
         """The exception that killed the worker thread, or None. Only ever set on
         a genuine crash — a clean stop() or normal completion leaves it None."""
         return self._exception
+
+    @property
+    def history(self) -> list:
+        """Per-generation trajectory, one dict per generation:
+        {gen, mean, sigma, cov, best_energy, best_energy_overall}. `mean` is the
+        distribution centre (param space when tempering, else log-exponents), `cov`
+        is the search covariance sigma**2 * C (None in the 1-D path)."""
+        with self._lock:
+            return list(self._history)
 
     def start(self, threads: int = 1) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -242,6 +252,14 @@ class Shell_Optimization:
                         self._generation     = gen
                         self._sigma_snapshot = sigma_1d
                         self._mean_snapshot  = array([mean_1d])
+                        self._history.append({
+                            "gen":                 gen,
+                            "mean":                array([mean_1d]),
+                            "sigma":               float(sigma_1d),
+                            "cov":                 None,
+                            "best_energy":         float(best_e),
+                            "best_energy_overall": float(best_energy_overall),
+                        })
 
                     if self._use_stopping and _last5_converged(recent_best_energies):
                         break
@@ -318,12 +336,25 @@ class Shell_Optimization:
 
                 logger.log_generation(gen, es.countevals, time.time() - t0, float(best_energy), float(best_energy_overall), es, best_exp_gen)
 
+                try:
+                    cov = (float(es.sigma) ** 2) * array(es.sm.C, dtype=float64)   # search covariance
+                except Exception:
+                    cov = None
+
                 with self._lock:
                     self._best_exp       = best_exp_overall
                     self._best_energy    = best_energy_overall
                     self._generation     = gen
                     self._sigma_snapshot = es.sigma
                     self._mean_snapshot  = es.mean.copy()
+                    self._history.append({
+                        "gen":                 gen,
+                        "mean":                es.mean.copy(),
+                        "sigma":               float(es.sigma),
+                        "cov":                 cov,
+                        "best_energy":         float(best_energy),
+                        "best_energy_overall": float(best_energy_overall),
+                    })
 
                 if self._use_stopping and _last5_converged(recent_best_energies):
                     logger.log_stop("last 5 best energies within 1e-6", gen, float(best_energy), es)

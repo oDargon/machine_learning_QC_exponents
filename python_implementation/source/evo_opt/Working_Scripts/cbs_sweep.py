@@ -73,14 +73,14 @@ cfg = Job_Manager_Config(
 objective      = Ground_Energy_Objective(template_cont, cfg)
 full_objective = Ground_Energy_Objective(template_full, cfg) if USE_CONTRACTION else None
 
-CSV_DIR = WORK_DIR / "csvs"
-
+# CSVs go straight to the submit dir so the live one is watchable during the run
+# (WORK_DIR is scratch, off shared storage on HPC).
 run_cbs(
     exp,
     objective,
     full_objective,
     work_dir  = WORK_DIR,
-    csv_dir   = CSV_DIR,
+    csv_dir   = SUBMIT_DIR,
     shells    = SHELLS,
     A         = A,
     B         = B,
@@ -95,6 +95,3 @@ run_cbs(
     contract_frozen_shells = USE_CONTRACTION,
     use_stopping          = USE_STOPPING,
 )
-
-shutil.copy(CSV_DIR / "cbs_results.csv", SUBMIT_DIR / "cbs_results.csv")
-print(f"Results copied to {SUBMIT_DIR / 'cbs_results.csv'}")
