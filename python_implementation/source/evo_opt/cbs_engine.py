@@ -1,8 +1,10 @@
 import csv
 import time
+import shutil
 from pathlib import Path
 from threading import Thread, Semaphore, Lock
-from numpy import abs
+from numpy import abs, array, float64, polyfit, polyval, linspace, logspace, ones, column_stack, argsort, sort, exp, sqrt, log, ceil
+from numpy.linalg import lstsq
 
 from .exponent_handler import Exponent_Set
 from .objectives import Objective
@@ -366,3 +368,248 @@ def run_cbs(
     print(f"\nCSV (sorted): {csv_path}")
     print(f"CSV (live)  : {live_path}")
     print("All shells done.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage-2 rework: per-shell CBS driver. Up-only, geom-warm-started, N >= m.
+# Independent of run_cbs above; a combiner will run it across shells once reviewed.
+# STAGE 1 (this commit): just the warm-started sweep. CBS fit / N* / verify come next.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _geom_predict(ns, ys, n_new, k=4):
+    # fit y(N) = y_inf + A·r^N (geometric approach to an asymptote) through the k points
+    # NEAREST n_new — the low end when extrapolating down, the high end when up, the
+    # surrounding points when interpolating — so the local fit straddles the query. r is
+    # the only nonlinearity, so grid-profile it and solve (y_inf, A) closed-form per r,
+    # keeping the best. N is shifted to n_min for conditioning. Linear fallback < 3 pts.
+    ns = array(ns, dtype=float64)
+    ys = array(ys, dtype=float64)
+    if k is not None and len(ns) > k:
+        idx    = sort(argsort(abs(ns - float(n_new)))[:k])
+        ns, ys = ns[idx], ys[idx]
+    if len(ns) < 3:
+        return float(polyval(polyfit(ns, ys, 1), n_new))
+
+    t     = ns - ns.min()
+    t_new = float(n_new) - float(ns.min())
+    best  = None
+    for r in linspace(0.02, 0.99, 256):
+        design   = column_stack([ones(len(t)), r ** t])
+        coef, *_ = lstsq(design, ys, rcond=None)
+        sse      = float(((ys - design @ coef) ** 2).sum())
+        if best is None or sse < best[0]:
+            best = (sse, float(coef[0]), float(coef[1]), float(r))
+    _, y_inf, A, r = best
+    return float(y_inf + A * r ** t_new)
+
+
+def _extrapolate_start(opt_hist, n_new, n_fit_points=4):
+    # predict [a0, a1] for n_new in (a0, lnβ) space, where lnβ = a1/(N-1) is N-stable
+    # (it strips a1's mechanical N-growth), then reconstruct a1 = (N-1)·lnβ. The fit uses
+    # the n_fit_points optima nearest n_new (locality is handled inside _geom_predict).
+    ns  = array([p[0]                for p in opt_hist], dtype=float64)
+    a0  = array([p[1]                for p in opt_hist], dtype=float64)
+    lnb = array([p[2] / (p[0] - 1.0) for p in opt_hist], dtype=float64)
+    a0_pred  = _geom_predict(ns, a0,  n_new, k=n_fit_points)
+    lnb_pred = _geom_predict(ns, lnb, n_new, k=n_fit_points)
+    return array([a0_pred, lnb_pred * (n_new - 1.0)], dtype=float64)
+
+
+def _cma_one_n(shell, codec, n, base, start_params, objective, work_dir, sigma,
+               generation_size, max_generations, threads, contract_frozen_shells,
+               use_stopping, seed):
+    # one CMA-ES run at fixed N, warm-started from start_params. Scratch dirs are
+    # removed after. Returns (e_best, best_params, gens, e_start).
+    init_dir = work_dir / f"s{shell}_N{n:02d}_init"
+    cma_dir  = work_dir / f"cma_s{shell}_N{n:02d}"
+
+    work = base.copy(no_energy=True)
+    work.apply_params(shell, codec, start_params, n=n)
+    if not contract_frozen_shells:
+        work.uncontract_all()
+
+    init    = evaluate_initial(work, objective, init_dir, threads=threads,
+                               subdir_name="init", contract_frozen_shells=contract_frozen_shells)
+    e_start = float(init.energy)
+
+    opt = Shell_Optimization(
+        init, float(init.energy), objective,
+        work_dir               = cma_dir,
+        generation_size        = generation_size,
+        sigma                  = sigma,
+        max_generations        = max_generations,
+        active_shell           = shell,
+        overwrite              = True,
+        logging                = False,
+        contract_frozen_shells = contract_frozen_shells,
+        use_tempering          = True,
+        n_tempering_params     = codec.m,
+        use_stopping           = use_stopping,
+        seed                   = seed,
+    )
+    opt.start(threads=threads)
+    opt.wait()
+
+    if opt.exception is not None:
+        print(f"  [WARNING] shell {shell} N={n}: CMA crashed ({opt.exception!r}); "
+              f"recording the initial energy.", flush=True)
+
+    state  = opt.get_state()
+    e_best = float(state["best_energy"]) if state["best_energy"] is not None else e_start
+    if state["best_exp"] is not None:
+        best_params = array(codec.encode(state["best_exp"].exponents[shell]), dtype=float64)
+    else:
+        best_params = array(start_params, dtype=float64)
+    gens = max(state["generation"] + 1, 0)
+
+    shutil.rmtree(init_dir, ignore_errors=True)
+    shutil.rmtree(cma_dir,  ignore_errors=True)
+    return e_best, best_params, gens, e_start
+
+
+def optimize_shell_cbs(
+    shell:                  int,
+    base:                   Exponent_Set,
+    objective:              Objective,
+    work_dir:               Path,
+    *,
+    m:                      int        = 2,
+    initial_steps:          int        = 3,
+    generator:              str        = "polynomial",
+    sigma:                  float      = 0.1,
+    generation_size:        int        = 6,
+    max_generations:        int        = 100,
+    threads:                int        = 6,
+    contract_frozen_shells: bool       = True,
+    use_stopping:           bool       = True,
+    n_fit_points:           int        = 4,
+    seed:                   int | None = None,
+) -> dict:
+    # STAGE 1: the warm-started sweep only. Optimises N_start .. N_start+initial_steps
+    # (initial_steps+1 points, >= 3), each a CMA run geom-warm-started from the previous
+    # optima in (a0, lnβ) space. Returns the E(N) points; CBS fit/verify come next.
+    n0  = len(base.exponents[shell])
+    lbl = L_LABELS[shell]
+    print(f"=== shell {shell} ({lbl}): sweep N {n0}..{n0 + initial_steps} ===", flush=True)
+
+    opt_hist = []   # (N, a0, a1) of converged optima, for the extrapolator
+    points   = []
+    for n in range(n0, n0 + initial_steps + 1):
+        codec = from_registry(generator, m=m, n=n)
+
+        if len(opt_hist) >= 2:
+            center, src = _extrapolate_start(opt_hist, n, n_fit_points), "geom"
+        elif opt_hist:
+            center, src = array([opt_hist[-1][1], opt_hist[-1][2]], dtype=float64), "prev"
+        else:
+            center, src = array(codec.encode(base.exponents[shell]), dtype=float64), "encode"
+
+        e_best, best, gens, e_start = _cma_one_n(
+            shell, codec, n, base, center, objective, work_dir, sigma,
+            generation_size, max_generations, threads, contract_frozen_shells,
+            use_stopping, seed,
+        )
+        points.append({"N": n, "E": e_best, "a0": float(best[0]), "a1": float(best[1]),
+                       "gens": gens, "E_start": e_start, "src": src})
+        opt_hist.append((n, float(best[0]), float(best[1])))
+        print(f"  N={n:3d} [{src:>6}]: E={e_best:.10f}  ({gens} gens)", flush=True)
+
+    return {"shell": shell, "l": lbl, "n_start": n0, "points": points}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage-2 CBS fit + N* + verify (A+C). Pure functions on (N, E) data — no CMA, no
+# objective. NOT yet wired into optimize_shell_cbs; built standalone for verification.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cbs_fit(ns, es):
+    # fit E(N) = E_inf + A·exp(-b·sqrt(N)) over the given points. b is the only
+    # nonlinearity, so grid-profile it and solve (E_inf, A) in closed form per b,
+    # keeping the best. Returns (E_inf, A, b, r2). Needs >= 3 points.
+    ns = array(ns, dtype=float64)
+    es = array(es, dtype=float64)
+    if len(ns) < 3:
+        raise ValueError(f"_cbs_fit needs >= 3 points, got {len(ns)}")
+
+    root = sqrt(ns)
+    best = None
+    for b in logspace(-1.0, 1.3, 400):        # b in ~[0.1, 20]
+        design   = column_stack([ones(len(ns)), exp(-b * root)])
+        coef, *_ = lstsq(design, es, rcond=None)
+        sse      = float(((es - design @ coef) ** 2).sum())
+        if best is None or sse < best[0]:
+            best = (sse, float(coef[0]), float(coef[1]), float(b))
+    sse, e_inf, A, b = best
+    ss_tot = float(((es - es.mean()) ** 2).sum())
+    r2     = 1.0 - sse / ss_tot if ss_tot > 0.0 else 0.0
+    return e_inf, A, b, r2
+
+
+def _cbs_predict(e_inf, A, b, n):
+    # the fitted ansatz evaluated at N = n
+    return float(e_inf + A * exp(-b * sqrt(float(n))))
+
+
+def _cbs_target_n(A, b, tol):
+    # smallest N whose modeled remaining error A·exp(-b·sqrt(N)) < tol.
+    # Invert: sqrt(N) > ln(A/tol)/b  ->  N = ceil((ln(A/tol)/b)^2). None if unreachable.
+    if not (A > 0.0 and b > 0.0 and tol > 0.0 and A > tol):
+        return None
+    return int(ceil((log(A / tol) / b) ** 2))
+
+
+def _cbs_uncertainty(ns, es, min_points=3):
+    # refit over tail windows (drop the lowest-N point progressively, keeping the
+    # asymptotic end); the spread of E_inf across windows is the error bar.
+    # Returns (e_inf_lo, e_inf_hi, spread, [e_inf per window]).
+    ns = list(ns)
+    es = list(es)
+    e_infs = []
+    for start in range(0, len(ns) - min_points + 1):
+        e_inf, _, _, _ = _cbs_fit(ns[start:], es[start:])
+        e_infs.append(e_inf)
+    lo, hi = min(e_infs), max(e_infs)
+    return lo, hi, hi - lo, e_infs
+
+
+def cbs_estimate(ns, es, tol, min_points=3):
+    # full CBS estimate from the swept points: fit -> E_inf/A/b, tail-window error bar,
+    # and the target N* where the modeled remaining error drops below tol.
+    e_inf, A, b, r2        = _cbs_fit(ns, es)
+    lo, hi, spread, e_infs = _cbs_uncertainty(ns, es, min_points=min_points)
+    n_star                 = _cbs_target_n(A, b, tol)
+    return {
+        "e_inf":        e_inf,
+        "A":            A,
+        "b":            b,
+        "r2":           r2,
+        "e_inf_lo":     lo,
+        "e_inf_hi":     hi,
+        "e_inf_spread": spread,
+        "e_inf_window": e_infs,
+        "n_star":       n_star,
+        "tol":          tol,
+    }
+
+
+def cbs_verify(estimate, ns, es, n_star, e_actual, tol):
+    # A+C acceptance after jumping to n_star and optimising (e_actual).
+    #   C (out-of-sample): did the PRE-jump fit predict E(n_star) to within tol?
+    #   A (limit stability): does re-fitting WITH the new point leave E_inf < tol away?
+    predicted = _cbs_predict(estimate["e_inf"], estimate["A"], estimate["b"], n_star)
+    resid_C   = abs(e_actual - predicted)
+
+    e_inf_new, A_new, b_new, r2_new = _cbs_fit(list(ns) + [n_star], list(es) + [e_actual])
+    shift_A = abs(e_inf_new - estimate["e_inf"])
+
+    accepted = bool(resid_C < tol and shift_A < tol)
+    return {
+        "accepted":  accepted,
+        "resid_C":   float(resid_C),
+        "shift_A":   float(shift_A),
+        "predicted": predicted,
+        "e_inf_new": e_inf_new,
+        "A_new":     A_new,
+        "b_new":     b_new,
+        "r2_new":    r2_new,
+    }

@@ -34,19 +34,17 @@ N_INCREASES     = 5        # per shell: N_start up to N_start + this many
 USE_CONTRACTION = True
 
 M_PARAMS        = 2        # 2D tempering (matches the 25th grid scans, for comparison)
-SIGMA           = 0.1      # initial CMA step
+SIGMA           = 0.1      # CMA step-size (CMA adapts it internally from here)
 GENERATION_SIZE = 6        # CMA population per generation
 MAX_GENERATIONS = 100      # hard cap; the early-stop should end well before this
 USE_STOPPING    = True     # last-5-best-energies-within-1e-6 early stop
 THREADS         = 6
 
-# after >=2 optima, predict the next N's start by locally modelling the converged
-# optima in (a0, lnβ) space (lnβ = a1/(N-1) factors out a1's mechanical N-growth),
-# then reconstruct a1 = (N-1)*lnβ. Uses only the last N_FIT_POINTS optima (local).
+# after >=2 optima, predict the next N's start with a geometric-increment model of
+# the converged optima in (a0, lnβ) space (lnβ = a1/(N-1) factors out a1's mechanical
+# N-growth), then reconstruct a1 = (N-1)*lnβ. Uses only the last N_FIT_POINTS optima.
 USE_EXTRAPOLATION = True
 N_FIT_POINTS      = 4         # recent optima used for the local model
-EXTRAP_MODEL      = "geom"    # "geom": geometric-increment (exp approach to the CBS limit);
-                             #   "quad": local quadratic; "linear": local line
 
 # CMA-ES seed. Set an int for reproducible runs (each sub-optimisation is seeded
 # deterministically from this base); None = fresh random each run.
@@ -99,7 +97,7 @@ else:
 
 def cma_converge(shell, codec, N, start_params, seed):
     """One 2D CMA-ES run at fixed N, warm-started from start_params. Returns
-    (best_energy, converged_mean_params, gens_run). Job dirs are removed after."""
+    (best_energy, best_params, gens, history, e_start). Job dirs are removed after."""
     init_dir = WORK_DIR / f"s{shell}_N{N:02d}_init"
     cma_dir  = WORK_DIR / f"cma_s{shell}_N{N:02d}"
 
@@ -179,17 +177,8 @@ def extrapolate_start(opt_hist, n_new):
     a0  = array([p[1]                for p in pts], dtype=float64)
     lnb = array([p[2] / (p[0] - 1.0) for p in pts], dtype=float64)   # lnβ = a1/(N-1)
 
-    if EXTRAP_MODEL == "geom":
-        a0_pred  = _geom_predict(Ns, a0,  n_new)
-        lnb_pred = _geom_predict(Ns, lnb, n_new)
-    elif EXTRAP_MODEL == "quad":
-        deg = min(2, len(pts) - 1)
-        a0_pred  = float(polyval(polyfit(Ns, a0,  deg), n_new))
-        lnb_pred = float(polyval(polyfit(Ns, lnb, deg), n_new))
-    else:  # "linear"
-        a0_pred  = float(polyval(polyfit(Ns, a0,  1), n_new))
-        lnb_pred = float(polyval(polyfit(Ns, lnb, 1), n_new))
-
+    a0_pred  = _geom_predict(Ns, a0,  n_new)
+    lnb_pred = _geom_predict(Ns, lnb, n_new)
     return array([a0_pred, lnb_pred * (n_new - 1.0)], dtype=float64)
 
 
@@ -213,7 +202,7 @@ for shell in SHELLS:
 
         # choose the starting guess
         if USE_EXTRAPOLATION and len(opt_hist) >= 2:
-            center, src = extrapolate_start(opt_hist, N), EXTRAP_MODEL
+            center, src = extrapolate_start(opt_hist, N), "geom"
         elif opt_hist:
             center, src = array([opt_hist[-1][1], opt_hist[-1][2]], dtype=float64), "prev"
         else:
