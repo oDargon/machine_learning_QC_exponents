@@ -9,7 +9,7 @@ from evo_opt.common import Executor_Type
 from evo_opt.cma_opt_2 import evaluate_initial
 from evo_opt.cbs_engine import run_cbs
 
-_arg_parser = argparse.ArgumentParser(description="CBS Component 1: per-shell converge-to-CBS (sweep + jump-to-N* + verify)")
+_arg_parser = argparse.ArgumentParser(description="CBS Component 1: per-shell converge-to-CBS (sweep + jump-to-N* + sqrt(N) tail)")
 _arg_parser.add_argument("--submit-dir", type=Path, default=Path.cwd())
 _arg_parser.add_argument("--work-dir",   type=Path, required=True,
                          help="scratch dir for all job I/O — keep this OFF shared/home storage on HPC")
@@ -27,10 +27,13 @@ RUN_SCRIPT     = "run.sh"
 EXTRACT_SCRIPT = "extract.sh"
 
 SHELLS            = [0, 1, 2, 3, 4]   # shell indices to converge (each independent)
-INITIAL_STEPS     = 3                 # sweep N_start .. N_start+this (>=2 -> >=3 fit points)
+INITIAL_STEPS     = 2                 # sweep N_start .. N_start+this (2 -> N, N+1, N+2)
 TOL               = 1.0e-4            # target: within this of the per-shell CBS limit (Eh)
-MAX_JUMPS         = 6                 # cap on jump-to-N* iterations before giving up
+SQRT_STEP         = 0.5               # tail step size in sqrt(N) (bigger N-gaps deeper in)
+MAX_TAIL_STEPS    = 8                 # cap on tail points taken after the jump
 N_STAR_CAP        = 60                # refuse to jump past this N (guards a bad early fit); None = off
+EARLY_STOP        = False             # optional cheap worst-case early stop after any step
+BAD_RATIO         = 0.9               # pessimistic per-unit-sqrt(N) decay ratio for EARLY_STOP
 
 GENERATOR         = "polynomial"
 M                 = 2                 # tempering params per shell (2 -> geom extrapolation in (a0,lnβ))
@@ -99,8 +102,11 @@ run_cbs(
     m                      = M,
     initial_steps          = INITIAL_STEPS,
     tol                    = TOL,
-    max_jumps              = MAX_JUMPS,
+    sqrt_step              = SQRT_STEP,
+    max_tail_steps         = MAX_TAIL_STEPS,
     n_star_cap             = N_STAR_CAP,
+    early_stop             = EARLY_STOP,
+    bad_ratio              = BAD_RATIO,
     generator              = GENERATOR,
     sigma                  = SIGMA,
     generation_size        = GENERATION_SIZE,
