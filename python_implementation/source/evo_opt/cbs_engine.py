@@ -184,9 +184,11 @@ def _tail_estimate(tail_ns, tail_es):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Component 1: per-shell converge-to-CBS engine.
-#   1. sweep N_start .. +initial_steps (geom-warm-started CMA)
+#   1. sweep N_start .. +initial_steps (geom-warm-started CMA); if the increments
+#      aren't shrinking yet (ratio >= ratio_floor) keep adding unit-N points until
+#      they do, or stop the shell if they never do within max_sweep_extend.
 #   2. fit E(N) -> N* (aimed at tol/2 for margin); jump there to reach the
-#      asymptotic exp(-b*sqrt N) tail.
+#      asymptotic exp(-b*sqrt N) tail (N* beyond n_star_cap => stop, never leap).
 #   3. step up in sqrt(N) building a consecutive tail; accept when the tail fit's
 #      remaining gap (E_deepest - E_inf) < tol.  An optional cheap early-stop can
 #      end any step early via a worst-case decay bound.
@@ -205,6 +207,8 @@ def run_cbs(
     csv_dir:                Path | None = None,   # defaults to work_dir; override to redirect
     m:                      int        = 2,
     initial_steps:          int        = 2,   # sweep N .. N+this (>=2 -> >=3 fit points)
+    ratio_floor:            float      = 0.9, # extend the sweep while |Δ_last/Δ_prev| >= this
+    max_sweep_extend:       int        = 6,   # max extra unit-N steps before giving up on a flat shell
     tol:                    float      = 1e-5,
     sqrt_step:              float      = 0.5,  # tail step size in sqrt(N)
     max_tail_steps:         int        = 8,    # cap on tail points after the jump
@@ -322,11 +326,42 @@ def run_cbs(
                     _log(f"  [Early] shell {shell} ({lbl}) N={n}: worst-case remaining {rem:.2e} < tol -> converged")
                     break
 
+        # ── Phase A.5: extend the sweep while the increments aren't shrinking.
+        #    ratio = |Δ_last / Δ_prev|; >= ratio_floor means "not decaying yet", so the
+        #    exp(-b√N) fit can't be trusted (a tiny/high-L shell in a near-linear regime,
+        #    e.g. g). Walk up one N at a time until it decays, drops below tol, or the
+        #    budget runs out — then refuse to extrapolate and stop (best-effort deepest). ──
+        stopped = False
+        if not converged:
+            extended = 0
+            while extended < max_sweep_extend:
+                es = [p["E"] for p in points]
+                d_prev, d_last = es[-2] - es[-3], es[-1] - es[-2]
+                ratio = abs(d_last / d_prev) if abs(d_prev) > 1e-15 else float("inf")
+                if ratio < ratio_floor or abs(d_last) <= tol:
+                    break                                    # decaying / already below tol
+                n_next = points[-1]["N"] + 1
+                pt = _do_point(n_next, "sweep")
+                extended += 1
+                _log(f"  [Extend {extended}] shell {shell} ({lbl}) N={n_next:3d} [{pt['src']:>6}]: "
+                     f"E={pt['E']:.10f} (ratio {ratio:.2f} >= {ratio_floor}) ({pt['gens']} gens)")
+
+            es = [p["E"] for p in points]                    # re-check after extending
+            d_prev, d_last = es[-2] - es[-3], es[-1] - es[-2]
+            ratio = abs(d_last / d_prev) if abs(d_prev) > 1e-15 else float("inf")
+            if ratio >= ratio_floor and abs(d_last) > tol:
+                stopped, n_final, e_inf_out = True, points[-1]["N"], min(es)
+                _log(f"  [Stop ] shell {shell} ({lbl}): increments not shrinking (ratio={ratio:.2f}) "
+                     f"after {extended} extra step(s); flat/underdetermined -> NOT converged, "
+                     f"reporting deepest E={e_inf_out:.10f}")
+
         # ── Phase B: fit sweep -> N* (aim tol/2 for margin), pick the tail anchor.
         #    We never step below the deepest swept point, so if the fit already puts
         #    N* within the swept range (or off the chart), we don't trust that fit —
-        #    we anchor at the deepest point and still CONFIRM upward in the tail. ──
-        if not converged:
+        #    we anchor at the deepest point and still CONFIRM upward in the tail.
+        #    An N* beyond the cap is refused (stop), never leapt to. ──
+        anchor = None
+        if not converged and not stopped:
             ns = [p["N"] for p in points]
             es = [p["E"] for p in points]
             _, A0, b0, _ = _cbs_fit(ns, es)
@@ -336,15 +371,17 @@ def run_cbs(
                 anchor = points[-1]                          # deepest swept point; no jump
                 _log(f"  [InTail] shell {shell} ({lbl}): sweep fit puts "
                      f"N*={'inf' if n_star is None else n_star} within range; confirming from N={anchor['N']}")
+            elif n_star_cap is not None and n_star > n_star_cap:
+                stopped, n_final, e_inf_out = True, max(ns), min(es)
+                _log(f"  [Stop ] shell {shell} ({lbl}): predicted N*={n_star} exceeds cap {n_star_cap}; "
+                     f"NOT converged, reporting deepest E={e_inf_out:.10f}")
             else:
-                if n_star_cap is not None and n_star > n_star_cap:
-                    _log(f"  [Cap  ] shell {shell} ({lbl}): predicted N*={n_star} capped to {n_star_cap}")
-                    n_star = n_star_cap
                 anchor = _do_point(n_star, "jump")
                 _log(f"  [Jump ] shell {shell} ({lbl}) N*={n_star:3d} [{anchor['src']:>6}]: "
                      f"E={anchor['E']:.10f} ({anchor['gens']} gens)")
 
-            # ── Phase C: step up in sqrt(N) from the anchor, building the tail ──
+        # ── Phase C: step up in sqrt(N) from the anchor, building the tail ──
+        if anchor is not None:
             tail = [anchor]
             u0   = sqrt(float(anchor["N"]))
             for k in range(1, max_tail_steps + 1):

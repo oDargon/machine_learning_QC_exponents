@@ -29,9 +29,11 @@ EXTRACT_SCRIPT = "extract.sh"
 SHELLS            = [0, 1, 2, 3, 4]   # shell indices to converge (each independent)
 INITIAL_STEPS     = 2                 # sweep N_start .. N_start+this (2 -> N, N+1, N+2)
 TOL               = 1.0e-4            # target: within this of the per-shell CBS limit (Eh)
+RATIO_FLOOR       = 0.9               # extend the sweep while |Δ_last/Δ_prev| >= this (flat-shell guard)
+MAX_SWEEP_EXTEND  = 6                 # max extra unit-N steps before giving up on a non-decaying shell
 SQRT_STEP         = 0.5               # tail step size in sqrt(N) (bigger N-gaps deeper in)
 MAX_TAIL_STEPS    = 8                 # cap on tail points taken after the jump
-N_STAR_CAP        = 60                # refuse to jump past this N (guards a bad early fit); None = off
+N_STAR_CAP        = 60                # refuse to jump past this N (stop, don't leap); None = off
 EARLY_STOP        = False             # optional cheap worst-case early stop after any step
 BAD_RATIO         = 0.9               # pessimistic per-unit-sqrt(N) decay ratio for EARLY_STOP
 
@@ -102,6 +104,8 @@ run_cbs(
     m                      = M,
     initial_steps          = INITIAL_STEPS,
     tol                    = TOL,
+    ratio_floor            = RATIO_FLOOR,
+    max_sweep_extend       = MAX_SWEEP_EXTEND,
     sqrt_step              = SQRT_STEP,
     max_tail_steps         = MAX_TAIL_STEPS,
     n_star_cap             = N_STAR_CAP,
