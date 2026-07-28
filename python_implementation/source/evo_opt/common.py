@@ -1,6 +1,10 @@
 from enum import Enum
 
 
+# Chemical accuracy: 1 kcal/mol expressed in Hartree (1 Ha = 627.509474 kcal/mol).
+CHEMICAL_ACCURACY = 1.0 / 627.509474   # ~= 1.5936e-3 Eh
+
+
 # Spectroscopic angular-momentum labels, l = 0 .. 15 (the max MOLCAS handles).
 # Alphabetical after 'f', omitting 'j', plus 'p'/'s' which are already used for
 # lower l. shell_label() callers should fall back to str(l) beyond this range.
