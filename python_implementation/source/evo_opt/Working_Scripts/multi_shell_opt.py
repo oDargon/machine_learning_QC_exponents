@@ -55,6 +55,11 @@ THREADS_GLOBAL           = 2   # max concurrent fully-uncontracted eval jobs in 
 GLOBAL_EVAL_WARMUP_GENS  = 10  # all shells must reach this many gens before the first global eval
 GLOBAL_EVAL_SPACING_GENS = 2   # all shells must advance this many gens between global evals
 
+# --- early stopping (on the global evals) ---
+EARLY_STOP        = True   # stop the whole run once the global energy has plateaued
+EARLY_STOP_WINDOW = 5      # number of most-recent global evals that must agree
+EARLY_STOP_TOL    = 1e-5   # max spread (Eh) across that window to count as converged
+
 # --- cross-shell coupling ---
 # Feed the converged global contraction back to every shell optimizer as its new
 # root, so each shell sees the other shells' improvements instead of optimizing
@@ -209,7 +214,9 @@ print(f"Target gens       : {MAX_GENERATIONS} (stop once all shells reach this)"
 print(f"Per-shell ceiling : {GEN_CEILING} gens")
 print(f"Warmup            : {GLOBAL_EVAL_WARMUP_GENS} gens before first global eval")
 print(f"Spacing           : {GLOBAL_EVAL_SPACING_GENS} gens between triggers")
-print(f"Max concurrent    : {THREADS_GLOBAL} global evals\n")
+print(f"Max concurrent    : {THREADS_GLOBAL} global evals")
+print(f"Early stop        : {'on' if EARLY_STOP else 'off'}"
+      + (f" (last {EARLY_STOP_WINDOW} globals within {EARLY_STOP_TOL:.1e} Eh)" if EARLY_STOP else "") + "\n")
 
 # ─── start all optimizers ─────────────────────────────────────────────────────
 
@@ -230,6 +237,11 @@ best_state = {
     "best_exp":    init_uncontracted.copy(no_energy=True),
 }
 best_state["best_exp"].energy = E0
+
+# early-stop tracking: every completed global-eval energy (completion order), and a
+# flag the poll loop watches once the recent window has plateaued (guarded by best_lock).
+global_energies: list[float] = []
+early_stop_flag = {"stop": False}
 
 csv_f = open(SUBMIT_DIR / "global_trace.csv", "w", newline="")
 log_f = open(SUBMIT_DIR / "global.log", "w")
@@ -293,6 +305,20 @@ def global_eval_worker(eval_idx, snapshot, trigger_gens):
         )
         csv_f.flush()
 
+        # early stop: once the most-recent EARLY_STOP_WINDOW global energies all sit
+        # within EARLY_STOP_TOL of each other, the global energy has plateaued.
+        global_energies.append(energy)
+        if EARLY_STOP and len(global_energies) >= EARLY_STOP_WINDOW:
+            window = global_energies[-EARLY_STOP_WINDOW:]
+            spread = max(window) - min(window)
+            if spread < EARLY_STOP_TOL:
+                early_stop_flag["stop"] = True
+                msg = (f"[EarlyStop] last {EARLY_STOP_WINDOW} global evals within "
+                       f"{EARLY_STOP_TOL:.1e} Eh (spread {spread:.2e}); requesting stop.")
+                print(msg)
+                log_f.write(msg + "\n")
+                log_f.flush()
+
     # cross-shell coupling: feed the converged contraction back to every shell
     # optimizer as a new root
     if (
@@ -333,7 +359,8 @@ last_trigger_gens = {idx: -1 for idx in optimizers}
 # optimizing (up to the ceiling) so global evals keep firing for the whole run;
 # they are stopped once the slowest shell catches up. If any shell runs all the way
 # to the ceiling, the ">5x slower" assumption has broken — bail out immediately.
-while any(optimizers[idx].is_running for idx in optimizers) and not all_reached_target() and not any_hit_ceiling():
+while (any(optimizers[idx].is_running for idx in optimizers)
+       and not all_reached_target() and not any_hit_ceiling() and not early_stop_flag["stop"]):
     abort_if_crashed()
     active_evals[:] = [t for t in active_evals if t.is_alive()]
 
@@ -374,6 +401,10 @@ if any_hit_ceiling() and not all_reached_target():
     stalled = [idx for idx in optimizers if optimizers[idx].generation >= GEN_CEILING - 1]
     print(f"\n[WARNING] shell(s) {stalled} hit the {GEN_CEILING}-gen ceiling before all shells "
           f"reached the target ({MAX_GENERATIONS}); exiting early.")
+
+if early_stop_flag["stop"]:
+    print(f"\n[EarlyStop] global energy plateaued (last {EARLY_STOP_WINDOW} evals within "
+          f"{EARLY_STOP_TOL:.1e} Eh); stopping all shells.")
 
 for idx in optimizers:
     optimizers[idx].stop(wait=False)   # target reached (or ceiling hit); halt any shell still running

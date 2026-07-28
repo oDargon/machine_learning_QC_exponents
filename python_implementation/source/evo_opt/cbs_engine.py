@@ -233,7 +233,7 @@ def run_cbs(
         raise ValueError("initial_steps must be >= 2 (the CBS fit needs >= 3 points)")
 
     # `base` arrives ready: contraction (if any) already baked in, dirs already
-    # created — staging/bootstrapping is the caller's job (see cbs_sweep.py).
+    # created — staging/bootstrapping is the caller's job (see cbs_sweep_old.py).
     csv_dir = csv_dir if csv_dir is not None else work_dir   # CSVs default to the work dir
     n_slots = max(1, total_threads // threads_per_shell)
     _sem    = Semaphore(n_slots)

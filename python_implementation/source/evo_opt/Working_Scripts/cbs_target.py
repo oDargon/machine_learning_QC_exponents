@@ -37,28 +37,38 @@ OPTIMISTIC_FACTOR = 1.5
 
 # generate starting .expo files (extrapolated exponents at each shell's minimal N) for
 # the downstream thorough optimizer — always the standard one, plus the optimistic one
-# if OPTIMISTIC above is on. ATOM sets the element metadata / filename.
+# if OPTIMISTIC above is on. The atom / generator / M are read from the CSV #META
+# header the sweep wrote — no need to restate them here.
 GENERATE_EXPO = True
-ATOM          = "Si"
-M_PARAMS      = 2       # tempering params the run used (must match how a0/a1 were fit)
 N_FIT_POINTS  = 4       # optima nearest the target N used for the param extrapolation
 
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
 
 def read_results(path):
-    """Group (N, E_cma) by shell. Re-sorted by N per shell, so ordered and
-    unordered (partial) files both work."""
+    """Group (N, E_cma) by shell, and parse the #META provenance line the sweep
+    writes (atom / generator / M / ...). Rows are re-sorted by N per shell, so
+    ordered and unordered (partial) files both work. Returns (shells, meta)."""
     shells = {}
+    meta   = {}
     with open(path) as f:
         for r in csv.reader(f):
-            if not r or not r[0].strip().lstrip("-").isdigit():
-                continue                                     # header / blank / comment
+            if not r:
+                continue
+            c0 = r[0].strip()
+            if c0.startswith("#META"):                       # key=value provenance tokens
+                for tok in c0.split()[1:]:
+                    if "=" in tok:
+                        k, v = tok.split("=", 1)
+                        meta[k] = v
+                continue
+            if not c0.lstrip("-").isdigit():
+                continue                                     # header / blank / other comment
             s = int(r[0]); n = int(r[2]); e = float(r[3]); a0 = float(r[4]); a1 = float(r[5])
             shells.setdefault(s, {"l": r[1], "pts": []})["pts"].append((n, e, a0, a1))
     for s in shells:
         shells[s]["pts"].sort()
-    return shells
+    return shells, meta
 
 
 def minimal_n(pts, e_inf, A, b, dE):
@@ -88,7 +98,12 @@ def minimal_n(pts, e_inf, A, b, dE):
     return n_fit, src, _cbs_predict(e_inf, A, b, n_fit)
 
 
-shells = read_results(RESULTS_CSV)
+shells, meta = read_results(RESULTS_CSV)
+if "atom" not in meta or "M" not in meta:
+    raise SystemExit(f"{RESULTS_CSV} has no #META header (atom/M). Regenerate it with the current sweep script.")
+ATOM      = meta["atom"]
+M_PARAMS  = int(meta["M"])
+GENERATOR = meta.get("generator", "polynomial")
 
 lines = []
 def out(s=""):
@@ -98,6 +113,7 @@ def out(s=""):
 out("=" * 72)
 out("CBS minimal-N report")
 out(f"source: {RESULTS_CSV}")
+out(f"meta:   atom={ATOM}  generator={GENERATOR}  M={M_PARAMS}")
 if OPTIMISTIC:
     out(f"optimistic column: tolerance relaxed x{OPTIMISTIC_FACTOR}")
 out("=" * 72)
@@ -194,7 +210,7 @@ def write_expo(targets, filename):
             params = array(sampled[N], dtype=float64)                     # exact optimized params
         else:
             params = _extrapolate_start([(p[0], p[2], p[3]) for p in pts], N, N_FIT_POINTS)
-        exp_list.append(from_registry("polynomial", m=M_PARAMS, n=N).decode(params, N))
+        exp_list.append(from_registry(GENERATOR, m=M_PARAMS, n=N).decode(params, N))
     es   = Exponent_Set(atom_name=ATOM, exponents=exp_list)
     path = es.save(RESULTS_CSV.parent, filename, overwrite=True)
     out(f"  saved {path}")
