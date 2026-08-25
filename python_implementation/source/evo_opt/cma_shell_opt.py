@@ -230,10 +230,11 @@ class Shell_Optimization:
                     best_idx = int(energies.argmin())
                     best_e   = energies[best_idx]
 
-                    mean_1d = candidates[best_idx]
+                    # (1+λ): keep the incumbent mean unless an offspring actually beats it
                     if best_e < prev_best:
-                        sigma_1d *= 1.52
+                        mean_1d   = candidates[best_idx]
                         prev_best = best_e
+                        sigma_1d *= 1.52
                     else:
                         sigma_1d *= 0.9
                     sigma_1d = max(1e-10, sigma_1d)

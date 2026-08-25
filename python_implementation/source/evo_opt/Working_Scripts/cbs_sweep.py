@@ -125,7 +125,7 @@ def cma_converge(shell, codec, N, start_params, seed, threads):
         logging                = False,
         contract_frozen_shells = USE_CONTRACTION,
         use_tempering          = True,
-        n_tempering_params     = M_PARAMS,
+        n_tempering_params     = min(M_PARAMS, N),   # clamp: N<M routes to the 1-D optimiser, not a degenerate 2-D
         use_stopping           = USE_STOPPING,
         seed                   = seed,
     )
