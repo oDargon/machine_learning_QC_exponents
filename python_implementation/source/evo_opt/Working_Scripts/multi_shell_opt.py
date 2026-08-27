@@ -172,11 +172,15 @@ for shell_idx in range(_n_flags):
     lbl   = L_LABELS[shell_idx]
     n_exp = len(basis.exponents[shell_idx])
 
-    if n_exp <= 1:
-        print(f"  shell {shell_idx} ({lbl}): only {n_exp} exponent(s), skipping")
+    if n_exp < 1:
+        print(f"  shell {shell_idx} ({lbl}): no exponents, skipping")
         continue
 
-    shell_n_tempering = min(N_TEMPERING_PARAMS, n_exp) if USE_TEMPERING else N_TEMPERING_PARAMS
+    # Tempering describes a shell with an m-term polynomial; a single exponent has
+    # nothing to temper, so drop it and optimize the log-exponent directly (which
+    # also routes the shell into the fast scalar line search).
+    use_tempering_shell = USE_TEMPERING and n_exp > 1
+    shell_n_tempering   = min(N_TEMPERING_PARAMS, n_exp) if use_tempering_shell else N_TEMPERING_PARAMS
 
     shell_start = base.copy(no_energy=True)
     if USE_CONTRACTION:
@@ -201,7 +205,7 @@ for shell_idx in range(_n_flags):
         overwrite              = True,
         logging                = True,
         contract_frozen_shells = contract_frozen,
-        use_tempering          = USE_TEMPERING,
+        use_tempering          = use_tempering_shell,
         n_tempering_params     = shell_n_tempering,
     )
 

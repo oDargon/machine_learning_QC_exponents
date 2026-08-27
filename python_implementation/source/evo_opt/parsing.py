@@ -8,6 +8,7 @@ from typing import Optional
 
 BASIS_PLACEHOLDER = "{BASIS}"
 ADVANCED_PATTERN  = re.compile(r"(NUMS|EXPS|CONT)(\d+)")
+_WARNED_NO_PLACEHOLDER: set[str] = set()   # templates already warned about (warn once each)
 ATOMIC_NUMBERS    = {
     "H": 1,   "He": 2,  "Li": 3,  "Be": 4,  "B": 5,   "C": 6,   "N": 7,   "O": 8,   "F": 9,   "Ne": 10,
     "Na": 11, "Mg": 12, "Al": 13, "Si": 14, "P": 15,  "S": 16,  "Cl": 17, "Ar": 18,
@@ -108,16 +109,27 @@ def make_input_from_template(input_file: str | Path, template_file: str | Path, 
         new_text = text.replace(BASIS_PLACEHOLDER, format_basis_block(exponent_set))
 
     else:
-        new_text = ADVANCED_PATTERN.sub(
-            make_replacer(exponent_set, job_id=job_id),
-            text,
-        )
+        if not ADVANCED_PATTERN.search(text):
+            # no {BASIS} and no NUMS/EXPS/CONT: nothing to inject the basis into. The job
+            # will run with whatever basis the template hardcodes — warn (once) but continue.
+            key = str(template_file)
+            if key not in _WARNED_NO_PLACEHOLDER:
+                _WARNED_NO_PLACEHOLDER.add(key)
+                print(f"[WARNING] Template '{template_file.name}' has no {BASIS_PLACEHOLDER} "
+                      f"(or NUMS/EXPS/CONT) placeholder — the basis is NOT being injected; "
+                      f"jobs will run with the template's own basis.", flush=True)
+            new_text = text
+        else:
+            new_text = ADVANCED_PATTERN.sub(
+                make_replacer(exponent_set, job_id=job_id),
+                text,
+            )
 
-        if ADVANCED_PATTERN.search(new_text):
-            msg = "Unresolved placeholders remain in template"
-            if job_id is not None:
-                msg += f" for job {job_id}"
-            raise ValueError(msg)
+            if ADVANCED_PATTERN.search(new_text):
+                msg = "Unresolved placeholders remain in template"
+                if job_id is not None:
+                    msg += f" for job {job_id}"
+                raise ValueError(msg)
 
     input_file.write_text(new_text)
 

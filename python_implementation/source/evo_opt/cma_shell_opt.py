@@ -2,7 +2,7 @@ from pathlib import Path
 from threading import Thread, Lock, Event
 from numpy import exp, log, float64, ndarray, array
 from numpy.linalg import eigvalsh
-from numpy.random import normal as _normal
+from numpy.random import default_rng
 from .exponent_handler import Exponent_Set
 from .objectives import Objective
 from .cma_logging import FixedCountLogger
@@ -16,6 +16,22 @@ def _last5_converged(recent_best_energies: list, tol: float = 1e-6) -> bool:
     """Simple early-stop test: the last 5 generation-best energies all agree to
     within `tol`. Only fires once 5 have accumulated."""
     return len(recent_best_energies) == 5 and (max(recent_best_energies) - min(recent_best_energies)) <= tol
+
+
+class _ScalarES:
+    """Minimal stand-in exposing the CMA attributes FixedCountLogger reads, so the
+    1-D scalar ES logs through the same path as the N-D one. `sigma` is the step
+    size, `mean` the log-exponent centre, `sm.C` the unit 1x1 covariance (the
+    scalar path carries no learned covariance)."""
+    def __init__(self, center: float, sigma: float) -> None:
+        self.sigma = sigma
+        self.mean  = array([center])
+        self.sm    = _ScalarSM()
+
+
+class _ScalarSM:
+    def __init__(self) -> None:
+        self.C = array([[1.0]])
 
 
 class Shell_Optimization:
@@ -189,14 +205,32 @@ class Shell_Optimization:
             x0 = codec.encode(self._start_exp.exponents[self._active_shell]) if codec else log(self._start_exp.exponents[self._active_shell])
 
             if len(x0) == 1:
-                # ── 1-D: (1+λ)-ES generation loop ────────────────────────────────
+                # ── 1-D: (μ/μ_w, λ)-ES with CSA step-size control ─────────────────
+                # cma.CMAEvolutionStrategy needs dim >= 2, so scalar shells use a plain
+                # ES. Step size is controlled by CSA (cumulative step-size adaptation) —
+                # the sigma rule from CMA-ES, which in 1-D reduces to path-length control
+                # on a scalar (the covariance is a trivial 1): a long, correlated path of
+                # steps grows sigma (crossing slopes), a short zig-zag path shrinks it
+                # (converging in the basin). Constants are the standard CMA formulas of λ/μ.
+                n_mu    = max(1, self._generation_size // 2)
+                rng     = default_rng(self._seed)
+                w       = array([log(n_mu + 0.5) - log(i + 1) for i in range(n_mu)])
+                w       = w / w.sum()                                    # recombination weights
+                mu_eff  = 1.0 / float((w ** 2).sum())
+                c_sigma = (mu_eff + 2.0) / (1.0 + mu_eff + 5.0)          # path cumulation rate (n=1)
+                d_sigma = 1.0 + 2.0 * max(0.0, ((mu_eff - 1.0) / 2.0) ** 0.5 - 1.0) + c_sigma
+                chi1    = (2.0 / 3.141592653589793) ** 0.5              # E|N(0,1)|
+                p_sigma = 0.0                                           # scalar evolution path
+
                 mean_1d              = float(x0[0])
-                sigma_1d             = self._sigma
-                prev_best            = self._start_energy
+                sigma_1d             = max(1.0, float(self._sigma))
                 best_energy_overall  = self._start_energy
                 best_exp_overall     = self._start_exp.copy(no_energy=True)
-                recent_best_energies = []
                 root_exp             = self._start_exp.copy(no_energy=True)
+                recent_best_energies = []
+
+                logger = FixedCountLogger(work_dir, n_shells, self._active_shell, self._start_exp, self._start_energy, print_to_stdout=self._logging, codec=codec)
+                t0     = time.time()
 
                 for gen in range(self._max_generations):
                     batch_dir = work_dir / f"batch_{gen}"
@@ -213,37 +247,39 @@ class Shell_Optimization:
                     if pending_root is not None:
                         root_exp = pending_root.copy(no_energy=True)
 
-                    candidates  = [mean_1d + sigma_1d * _normal() for _ in range(self._generation_size)]
+                    z           = rng.standard_normal(self._generation_size)
+                    offspring   = mean_1d + sigma_1d * z
                     exp_objects = []
-                    for i in range(len(candidates)):
+                    for i in range(self._generation_size):
                         new_exp = root_exp.copy(no_energy=True)
                         if codec:
-                            new_exp.apply_params(self._active_shell, codec, array([candidates[i]]), n=n_active)
+                            new_exp.apply_params(self._active_shell, codec, array([offspring[i]]), n=n_active)
                         else:
-                            new_exp.set_shell_exponents(self._active_shell, exp(array([candidates[i]])))
+                            new_exp.set_shell_exponents(self._active_shell, exp(array([offspring[i]])))
                         if not self._contract_frozen_shells:
                             new_exp.uncontract_all()
                         exp_objects.append(new_exp)
 
                     results  = self._objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)
                     energies = array([r.energy for r in results], dtype=float64)
-                    best_idx = int(energies.argmin())
+                    order    = energies.argsort()
+                    best_idx = int(order[0])
                     best_e   = energies[best_idx]
 
-                    # (1+λ): keep the incumbent mean unless an offspring actually beats it
-                    if best_e < prev_best:
-                        mean_1d   = candidates[best_idx]
-                        prev_best = best_e
-                        sigma_1d *= 1.52
-                    else:
-                        sigma_1d *= 0.9
-                    sigma_1d = max(1e-10, sigma_1d)
+                    # CSA: recombine the mu best steps (in z-space), accumulate the
+                    # evolution path, then scale sigma by how the path length compares to a
+                    # random walk's — long correlated path grows it, short zig-zag shrinks it.
+                    z_w      = float((w * z[order[:n_mu]]).sum())
+                    mean_1d  = mean_1d + sigma_1d * z_w
+                    p_sigma  = (1.0 - c_sigma) * p_sigma + (c_sigma * (2.0 - c_sigma) * mu_eff) ** 0.5 * z_w
+                    sigma_1d = max(1e-10, sigma_1d * float(exp((c_sigma / d_sigma) * (abs(p_sigma) / chi1 - 1.0))))
 
                     if best_e < best_energy_overall:
                         best_energy_overall = best_e
                         best_exp_overall    = results[best_idx].copy(no_energy=True)
 
-                    results[best_idx].copy(no_energy=True).save(best_dir, f"gen_{gen:03d}")
+                    best_exp_gen = results[best_idx].copy(no_energy=True)
+                    best_exp_gen.save(best_dir, f"gen_{gen:03d}")
 
                     recent_best_energies.append(float(best_e))
                     if len(recent_best_energies) > 5:
@@ -264,7 +300,14 @@ class Shell_Optimization:
                             "best_energy_overall": float(best_energy_overall),
                         })
 
+                    logger.log_generation(
+                        gen, (gen + 1) * self._generation_size, time.time() - t0,
+                        float(best_e), float(best_energy_overall),
+                        _ScalarES(mean_1d, sigma_1d), best_exp_gen,
+                    )
+
                     if self._use_stopping and _last5_converged(recent_best_energies):
+                        logger.log_stop("last 5 best energies within 1e-6", gen, float(best_e), _ScalarES(mean_1d, sigma_1d))
                         break
 
                 return
