@@ -51,7 +51,7 @@ class Sweep_Config:
     seed: int | None = None
 
 
-def run_sweep(cfg: Sweep_Config) -> Path:
+def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
     SUBMIT_DIR = Path(cfg.submit_dir).resolve()
     WORK_DIR   = (Path(cfg.work_dir) / "sweep").resolve()
 
@@ -91,9 +91,11 @@ def run_sweep(cfg: Sweep_Config) -> Path:
             raise RuntimeError("bootstrap produced no contraction")
         base = boot.copy(no_energy=True)
         base.change_contraction(boot.resulting_contraction)
+        e_initial = float(boot.energy)   # uncontracted energy of the input basis (for the pipeline report)
         print(f"  bootstrap E (uncontracted): {boot.energy:.10f} Eh\n")
     else:
-        base = exp.copy(no_energy=True)
+        base      = exp.copy(no_energy=True)
+        e_initial = None   # no bootstrap eval when contraction is off
 
     def cma_converge(shell, codec, N, start_params, seed, threads):
         """One 2D CMA-ES run at fixed N, warm-started from start_params, using `threads`
@@ -235,4 +237,4 @@ def run_sweep(cfg: Sweep_Config) -> Path:
 
     print(f"\nsaved {ordered_path}       (ordered)")
     print(f"saved {live_path}  (live, completion order)")
-    return ordered_path
+    return ordered_path, e_initial

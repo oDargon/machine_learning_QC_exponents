@@ -61,7 +61,7 @@ def per_shell(value, n: int, name: str) -> list:
     return list(value)
 
 
-def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float]:
+def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
     SUBMIT_DIR  = Path(cfg.submit_dir).resolve()
     WORK_DIR    = (Path(cfg.work_dir) / "optimize").resolve()
     RESULTS_DIR = SUBMIT_DIR / "results"
@@ -420,4 +420,5 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float]:
     csv_f.close()
     log_f.close()
 
-    return best_state["best_exp"], best_state["best_energy"]
+    # E0 = uncontracted energy of the target basis before optimization (for the pipeline report)
+    return best_state["best_exp"], best_state["best_energy"], E0

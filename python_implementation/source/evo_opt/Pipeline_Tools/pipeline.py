@@ -2,7 +2,8 @@ import sys
 import argparse
 from pathlib import Path
 
-from evo_opt.common import CHEMICAL_ACCURACY
+from evo_opt.common import CHEMICAL_ACCURACY, L_LABELS
+from evo_opt.exponent_handler import Exponent_Set
 from evo_opt.pipeline_core.sweep    import Sweep_Config,    run_sweep
 from evo_opt.pipeline_core.target   import Target_Config,   run_target
 from evo_opt.pipeline_core.optimize import Optimize_Config, run_optimize
@@ -129,6 +130,7 @@ if SWEEP_ALREADY_MADE:
         raise SystemExit(f"SWEEP_ALREADY_MADE is on but no CSV found in {submit / 'results'} or {submit}.")
     print("\n########## STAGE 1/3 : SWEEP — skipped (SWEEP_ALREADY_MADE) ##########")
     print(f"reusing existing sweep CSV: {csv_path}\n")
+    e_initial = None   # initial-basis energy isn't computed when the sweep is skipped
 else:
     sweep_cfg = Sweep_Config(
         submit_dir        = _args.submit_dir,
@@ -155,7 +157,7 @@ else:
         seed              = SEED,
     )
     print("\n########## STAGE 1/3 : SWEEP ##########\n")
-    csv_path = run_sweep(sweep_cfg)
+    csv_path, e_initial = run_sweep(sweep_cfg)
 
 # ── stage 2: target ──
 target_cfg = Target_Config(
@@ -202,7 +204,67 @@ optimize_cfg = Optimize_Config(
     cross_shell_warmup_gens  = CROSS_SHELL_WARMUP_GENS,
 )
 print("\n########## STAGE 3/3 : OPTIMIZE ##########\n")
-best_exp, best_energy = run_optimize(optimize_cfg)
+best_exp, best_energy, e_target_unopt = run_optimize(optimize_cfg)
 
-print(f"\n########## PIPELINE COMPLETE ##########")
-print(f"best energy: {best_energy:.10f} Eh  ->  saved as best.expo in {Path(_args.submit_dir).resolve() / 'results'}")
+# ── pipeline report: energies + basis-size reduction ──
+report_lines = []
+def rep(s=""):
+    report_lines.append(s)
+    print(s)
+
+def basis_spec_counts(exp_set):
+    """(spec string, radial count = sum N, function count = sum N*(2l+1)) for a basis."""
+    n_rad  = 0
+    n_func = 0
+    spec   = ""
+    for l in range(len(exp_set.exponents)):
+        Nl      = len(exp_set.exponents[l])
+        lbl     = L_LABELS[l] if l < len(L_LABELS) else str(l)
+        n_rad  += Nl
+        n_func += Nl * (2 * l + 1)
+        spec   += f"{lbl}{Nl}"
+    return spec, n_rad, n_func
+
+submit_root  = Path(_args.submit_dir).resolve()
+initial_path = submit_root / EXPO_FILE   # the input .expo we started from (structure only, no MOLCAS)
+initial_basis = Exponent_Set.from_file(initial_path) if initial_path.exists() else None
+
+spec_fin, n_rad_fin, n_func_fin = basis_spec_counts(best_exp)
+
+rep("")
+rep("#" * 64)
+rep("PIPELINE REPORT")
+rep("#" * 64)
+rep("basis size:")
+if initial_basis is not None:
+    spec_init, n_rad_init, n_func_init = basis_spec_counts(initial_basis)
+    d_rad  = n_rad_init  - n_rad_fin
+    d_func = n_func_init - n_func_fin
+    pct    = (100.0 * d_func / n_func_init) if n_func_init else 0.0
+    rep(f"  initial (input)  : {spec_init}   radial={n_rad_init}   functions={n_func_init}")
+    rep(f"  final (optimized): {spec_fin}   radial={n_rad_fin}   functions={n_func_fin}")
+    rep(f"  reduction        : radial -{d_rad}   functions -{d_func}   ({pct:.1f}% fewer functions)")
+else:
+    rep(f"  initial (input)  : {EXPO_FILE} not found in submit dir — counts n/a")
+    rep(f"  final (optimized): {spec_fin}   radial={n_rad_fin}   functions={n_func_fin}")
+
+rep("")
+rep("energies (Eh):")
+e_init_str = f"{e_initial:.10f}" if e_initial is not None else "n/a (sweep skipped or contraction off)"
+rep(f"  initial uncontracted (input basis) : {e_init_str}")
+rep(f"  target basis, unoptimized          : {e_target_unopt:.10f}")
+rep(f"  final optimized                    : {best_energy:.10f}")
+
+rep("")
+rep("differences (Eh):")
+if e_initial is not None:
+    rep(f"  reduction cost    (target_unopt - initial) : {e_target_unopt - e_initial:+.10f}")
+rep(f"  optimization gain (final - target_unopt)   : {best_energy - e_target_unopt:+.10f}")
+if e_initial is not None:
+    rep(f"  net               (final - initial)        : {best_energy - e_initial:+.10f}")
+rep("#" * 64)
+
+report_path = submit_root / "results" / "report.txt"
+report_path.write_text("\n".join(report_lines) + "\n")
+print(f"\nsaved {report_path}")
+print(f"best.expo saved in {submit_root / 'results'}")
