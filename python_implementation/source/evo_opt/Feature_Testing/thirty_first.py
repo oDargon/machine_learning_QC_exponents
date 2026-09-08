@@ -10,30 +10,34 @@ from evo_opt.common import Executor_Type, L_LABELS
 from evo_opt.cma_opt_2 import evaluate_initial
 from evo_opt.tempering import from_registry
 
-_arg_parser = argparse.ArgumentParser(description="Sweep a shell's 2D tempering energy surface across increasing N")
+_arg_parser = argparse.ArgumentParser(description="Scan a shell's 2D tempering energy surface across increasing N over a FIXED (a0,a1) window (no recentering)")
 _arg_parser.add_argument("--submit-dir", type=Path, default=Path.cwd())
 _arg_parser.add_argument("--work-dir",   type=Path, required=True,
                          help="scratch dir for all job I/O — keep this OFF shared/home storage on HPC")
 _args = _arg_parser.parse_args()
 
 SUBMIT_DIR = _args.submit_dir.resolve()
-WORK_DIR   = (_args.work_dir / "Surface_Sweep").resolve()
+WORK_DIR   = (_args.work_dir / "Surface_Fixed").resolve()
 
 # ═══ USER CONFIGURATION ═══════════════════════════════════════════════════════
 
-EXPO_FILE      = "Si.expo"
+EXPO_FILE      = "B.expo"
 TEMPLATE_CONT  = "temp_cont.inp"
 TEMPLATE_FULL  = "temp_full.inp"
 RUN_SCRIPT     = "run.sh"
 EXTRACT_SCRIPT = "extract.sh"
 
-SHELLS          = [0]      # shells to scan; each is swept independently over N
+SHELLS          = [1]      # shells to scan; each is swept independently over N
 N_INCREASES     = 5        # per shell: scan N from N_start up to N_start + this many
 USE_CONTRACTION = True
 
 M_PARAMS        = 2        # tempering params → 2D grid; do not change (the sweep is 2D)
-SCAN_HALFWIDTH  = 1.5      # +/- range around the center in each param direction
+
+# fixed (a0, a1) window scanned identically for EVERY N (no recentering on the prev min)
+A0_MIN, A0_MAX  = 2.0, 10.0
+A1_MIN, A1_MAX  = -16.0, -5.0
 GRID            = 21       # points per axis (GRID**2 evals per N)
+
 THREADS         = 6
 POLL_INTERVAL   = 0.5      # seconds between job-completion checks in the manager (default is 5.0)
 
@@ -98,42 +102,40 @@ def scan_objective(params_batch, shell, codec, n):
     return array([float(r.energy) for r in results], dtype=float64)
 
 
-# ─── sweep: per shell, N_start .. N_start + N_INCREASES ───────────────────────
+# ─── fixed window: same (a0, a1) grid for every N ─────────────────────────────
+
+a0s         = linspace(A0_MIN, A0_MAX, GRID)
+a1s         = linspace(A1_MIN, A1_MAX, GRID)
+GA, GB      = meshgrid(a0s, a1s)
+grid_params = column_stack([GA.ravel(), GB.ravel()])
 
 for shell in SHELLS:
-    lbl = L_LABELS[shell]
-    n0  = len(base.exponents[shell])
-    print(f"=== shell {shell} ({lbl}): N {n0}..{n0 + N_INCREASES} ===")
+    lbl       = L_LABELS[shell]
+    shell_dir = RESULTS_DIR / lbl
+    shell_dir.mkdir(parents=True, exist_ok=True)
+    n0        = len(base.exponents[shell])
+    center    = array(from_registry("polynomial", m=M_PARAMS, n=n0).encode(base.exponents[shell]), dtype=float64)
+    print(f"=== shell {shell} ({lbl}): N {n0}..{n0 + N_INCREASES}   fixed a0[{A0_MIN},{A0_MAX}] a1[{A1_MIN},{A1_MAX}] ===")
 
-    center = None   # first N centers on the encoded starting exponents; later N on prev min
     for N in range(n0, n0 + N_INCREASES + 1):
         codec = from_registry("polynomial", m=M_PARAMS, n=N)
-        if center is None:
-            center = array(codec.encode(base.exponents[shell]), dtype=float64)
 
-        a0s = linspace(center[0] - SCAN_HALFWIDTH, center[0] + SCAN_HALFWIDTH, GRID)
-        a1s = linspace(center[1] - SCAN_HALFWIDTH, center[1] + SCAN_HALFWIDTH, GRID)
-        GA, GB      = meshgrid(a0s, a1s)
-        grid_params = column_stack([GA.ravel(), GB.ravel()])
-
-        print(f"  N={N:3d}: scanning {GRID}x{GRID} around ({center[0]:+.4f}, {center[1]:+.4f})", flush=True)
+        print(f"  N={N:3d}: scanning {GRID}x{GRID} over the fixed window", flush=True)
         Z = scan_objective(grid_params, shell, codec, N).reshape(GA.shape)
 
         best_flat = int(Z.argmin())
         grid_min  = array([GA.ravel()[best_flat], GB.ravel()[best_flat]], dtype=float64)
         print(f"         min E = {Z.min():.10f} Eh at ({grid_min[0]:+.4f}, {grid_min[1]:+.4f})", flush=True)
 
-        out_path = RESULTS_DIR / f"scan_shell{shell}_N{N:02d}.npz"
+        out_path = shell_dir / f"scan_shell{shell}_N{N:02d}.npz"
         savez(
             out_path,
             shell=shell, l=lbl, N=N, m=M_PARAMS,
-            halfwidth=SCAN_HALFWIDTH, grid=GRID,
-            a0s=a0s, a1s=a1s, Z=Z,
+            grid=GRID, a0s=a0s, a1s=a1s, Z=Z,
             center=center, grid_min=grid_min,
         )
-        print(f"         saved {out_path.name}", flush=True)
+        print(f"         saved {lbl}/{out_path.name}", flush=True)
 
-        center = grid_min                                   # next N centers here
         shutil.rmtree(BATCH_DIR, ignore_errors=True)        # free the batch before the next N
 
-print(f"\nAll scans saved to {RESULTS_DIR}")
+print(f"\nAll scans saved under {RESULTS_DIR}, one folder per shell: {', '.join(L_LABELS[s] for s in SHELLS)}")

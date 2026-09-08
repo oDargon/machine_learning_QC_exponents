@@ -4,7 +4,7 @@ from matplotlib.widgets import Button
 from pathlib import Path
 
 HERE     = Path(__file__).resolve().parent
-DATA_DIR = HERE / "2d_surface_data"
+DATA_DIR = HERE / "cbs_data" / "cbs_results_B_HF/d"
 
 
 def load_all(data_dir):

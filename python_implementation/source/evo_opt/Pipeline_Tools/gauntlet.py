@@ -23,6 +23,11 @@ EXTRACT_SCRIPT = "extract.sh"
 
 TOTAL_CORES = 6          # max MOLCAS jobs run concurrently (1 core per job assumed)
 
+# also emit a second matrix (gauntlet_vs_start.csv) = each cell minus the reference
+# basis on the SAME input. Needs <START_NAME>.expo present among the bases.
+SUBTRACT_START = False
+START_NAME     = "start"
+
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
 cfg = Gauntlet_Config(
@@ -35,5 +40,7 @@ cfg = Gauntlet_Config(
     total_cores    = TOTAL_CORES,
     expo_glob      = EXPO_GLOB,
     input_glob     = INPUT_GLOB,
+    subtract_start = SUBTRACT_START,
+    start_name     = START_NAME,
 )
 run_gauntlet(cfg)

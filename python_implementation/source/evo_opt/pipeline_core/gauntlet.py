@@ -24,6 +24,9 @@ class Gauntlet_Config:
     expo_glob:      str = "*.expo"   # which files in expo_dir count as bases
     input_glob:     str = "*.inp"    # which files in input_dir count as templates
 
+    subtract_start: bool = False     # also emit a delta matrix: each cell minus the reference basis on the same input
+    start_name:     str  = "start"   # reference basis for the delta (expects <start_name>.expo among the bases)
+
 
 def run_gauntlet(cfg: Gauntlet_Config) -> Path:
     SUBMIT_DIR = Path(cfg.submit_dir).resolve()
@@ -39,6 +42,7 @@ def run_gauntlet(cfg: Gauntlet_Config) -> Path:
     STAGE_EXPO  = START_DIR / "expos"
     STAGE_INPUT = START_DIR / "inputs"
     RESULTS_DIR = SUBMIT_DIR / "results"
+    LOGS_DIR    = RESULTS_DIR / "logs_dir"
     for d in (START_DIR, STAGE_EXPO, STAGE_INPUT, RESULTS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -102,25 +106,89 @@ def run_gauntlet(cfg: Gauntlet_Config) -> Path:
         for i in range(n_expo):
             energies[i, j] = float(results[i].energy)
 
-    # matrix CSV: rows = basis sets, cols = inputs
-    out_path = RESULTS_DIR / "gauntlet.csv"
-    with open(out_path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["basis\\input"] + inp_names)
+    # ─── pull every job log off scratch for manual inspection ──────────────────
+    # cleared first so the logs always match the matrices emitted below, never a
+    # previous run's basis/input set
+
+    shutil.rmtree(LOGS_DIR, ignore_errors=True)
+    n_logs = 0
+    for j in range(n_inp):
+        dst_dir = LOGS_DIR / inp_names[j]
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        logs = sorted((WORK_DIR / inp_names[j]).rglob("*.log"))
+        for k in range(len(logs)):
+            shutil.copy(logs[k], dst_dir / logs[k].name)
+            n_logs += 1
+
+    print(f"\ncopied {n_logs} job log(s) to {LOGS_DIR}", flush=True)
+
+    # ─── emit matrices (rows = basis .expo, cols = input template) ─────────────
+    # FAILED marks the 1e6 sentinel (a job whose energy couldn't be read).
+    corner = "basis \\ input"       # row label = basis (.expo); column label = input template
+    row_w  = max(max(len(n) for n in expo_names), len(corner))
+    col_w  = max(14, max(len(n) for n in inp_names) + 2)
+
+    def emit_matrix(mat, failed_mask, title, legend, csv_name, signed):
+        print(f"\n=== {title} ===")
+        print(legend)
+        print(f"{corner:<{row_w}}" + "".join(f"{inp_names[j]:>{col_w}}" for j in range(n_inp)))
         for i in range(n_expo):
-            w.writerow([expo_names[i]] + [f"{energies[i, j]:.10f}" for j in range(n_inp)])
+            cells = ""
+            for j in range(n_inp):
+                if failed_mask[i][j]:
+                    cells += f"{'FAILED':>{col_w}}"
+                elif signed:
+                    cells += f"{mat[i, j]:>+{col_w}.6f}"
+                else:
+                    cells += f"{mat[i, j]:>{col_w}.6f}"
+            print(f"{expo_names[i]:<{row_w}}{cells}")
 
-    # printed table (FAILED where the 1e6 sentinel came back)
-    row_w = max(len(n) for n in expo_names)
-    col_w = max(14, max(len(n) for n in inp_names) + 2)
-    print("\n=== gauntlet energy matrix (Eh) ===")
-    print(" " * row_w + "".join(f"{inp_names[j]:>{col_w}}" for j in range(n_inp)))
-    for i in range(n_expo):
-        cells = "".join(
-            (f"{'FAILED':>{col_w}}" if energies[i, j] >= 1e6 else f"{energies[i, j]:>{col_w}.6f}")
-            for j in range(n_inp)
+        path = RESULTS_DIR / csv_name
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow([corner] + inp_names)
+            for i in range(n_expo):
+                row = [expo_names[i]]
+                for j in range(n_inp):
+                    if failed_mask[i][j]:
+                        row.append("FAILED")
+                    elif signed:
+                        row.append(f"{mat[i, j]:+.10f}")
+                    else:
+                        row.append(f"{mat[i, j]:.10f}")
+                w.writerow(row)
+        print(f"saved {path}")
+        return path
+
+    raw_failed = [[energies[i, j] >= 1e6 for j in range(n_inp)] for i in range(n_expo)]
+    out_path = emit_matrix(
+        energies, raw_failed,
+        "gauntlet energy matrix (Eh)",
+        "rows = basis set (.expo)   columns = input template   |   compare DOWN a column (same input): lowest = best basis",
+        "gauntlet.csv", signed=False,
+    )
+
+    # ─── delta vs the reference (start) basis, per column ──────────────────────
+    if cfg.subtract_start:
+        start_idx = None
+        for i in range(n_expo):
+            if expo_names[i] == cfg.start_name:
+                start_idx = i
+                break
+        if start_idx is None:
+            raise SystemExit(f"gauntlet: subtract_start is on but no reference basis "
+                             f"'{cfg.start_name}.expo' found among {expo_names}")
+
+        ref          = energies[start_idx, :]        # the start basis's energy per input (column)
+        delta        = energies - ref                # broadcast: subtract start row from every row, per column
+        delta_failed = [[energies[i, j] >= 1e6 or ref[j] >= 1e6 for j in range(n_inp)]
+                        for i in range(n_expo)]
+        emit_matrix(
+            delta, delta_failed,
+            f"gauntlet delta vs '{cfg.start_name}' basis (Eh)",
+            f"each cell = energy(basis) - energy({cfg.start_name}) on the SAME input   |   "
+            f"negative = better than {cfg.start_name}   (the {cfg.start_name} row is 0)",
+            "gauntlet_vs_start.csv", signed=True,
         )
-        print(f"{expo_names[i]:<{row_w}}{cells}")
 
-    print(f"\nsaved {out_path}")
     return out_path
