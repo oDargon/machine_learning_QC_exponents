@@ -29,6 +29,8 @@ EXTRACT_SCRIPT = "extract.sh"
 
 SHELLS          = [1]      # shells to scan; each is swept independently over N
 N_INCREASES     = 5        # per shell: scan N from N_start up to N_start + this many
+N_DECREASES     = 0        # ...and down to N_start - this many (floored at 2; at N=1 the
+                           # a1 axis is degenerate, log a = a0 with a1 multiplied by zero)
 USE_CONTRACTION = True
 
 M_PARAMS        = 2        # tempering params → 2D grid; do not change (the sweep is 2D)
@@ -115,9 +117,11 @@ for shell in SHELLS:
     shell_dir.mkdir(parents=True, exist_ok=True)
     n0        = len(base.exponents[shell])
     center    = array(from_registry("polynomial", m=M_PARAMS, n=n0).encode(base.exponents[shell]), dtype=float64)
-    print(f"=== shell {shell} ({lbl}): N {n0}..{n0 + N_INCREASES}   fixed a0[{A0_MIN},{A0_MAX}] a1[{A1_MIN},{A1_MAX}] ===")
+    n_lo      = max(n0 - N_DECREASES, 2)
+    n_hi      = n0 + N_INCREASES
+    print(f"=== shell {shell} ({lbl}): N {n_lo}..{n_hi}   fixed a0[{A0_MIN},{A0_MAX}] a1[{A1_MIN},{A1_MAX}] ===")
 
-    for N in range(n0, n0 + N_INCREASES + 1):
+    for N in range(n_lo, n_hi + 1):
         codec = from_registry("polynomial", m=M_PARAMS, n=N)
 
         print(f"  N={N:3d}: scanning {GRID}x{GRID} over the fixed window", flush=True)

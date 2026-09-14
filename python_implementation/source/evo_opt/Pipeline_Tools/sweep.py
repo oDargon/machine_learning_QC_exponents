@@ -27,7 +27,8 @@ GENERATOR       = "polynomial"  # tempering generator (recorded in the CSV #META
 SIGMA           = 0.1      # CMA step-size (CMA adapts it internally from here)
 GENERATION_SIZE = 6        # CMA population per generation
 MAX_GENERATIONS = 100      # hard cap; the early-stop should end well before this
-USE_STOPPING    = True     # last-5-best-energies-within-1e-6 early stop
+USE_STOPPING    = True     # early stop once the last 5 generation bests agree to STOP_TOL
+STOP_TOL        = 1e-6     # that threshold (Eh); floored by the QC code's printed precision
 
 # core budget: run TOTAL_THREADS // THREADS_PER_SHELL shells concurrently, each CMA
 # run using THREADS_PER_SHELL cores. On HPC bump TOTAL_THREADS and set per-shell = 6.
@@ -60,6 +61,7 @@ cfg = Sweep_Config(
     generation_size   = GENERATION_SIZE,
     max_generations   = MAX_GENERATIONS,
     use_stopping      = USE_STOPPING,
+    stop_tol          = STOP_TOL,
     total_threads     = TOTAL_THREADS,
     threads_per_shell = THREADS_PER_SHELL,
     use_extrapolation = USE_EXTRAPOLATION,

@@ -4,7 +4,7 @@ from matplotlib.widgets import Button
 from pathlib import Path
 
 HERE     = Path(__file__).resolve().parent
-DATA_DIR = HERE / "cbs_data" / "cbs_results_B_HF/d"
+DATA_DIR = HERE / "2d_surface_data" / "Li_p3"
 
 
 def load_all(data_dir):
@@ -47,8 +47,6 @@ def draw():
     cf     = ax.contourf(GA, GB, Z, levels=levels, cmap="viridis", extend="max")
     fig.colorbar(cf, cax=cax, label="E (Eh)")
 
-    ax.plot(d["center"][0], d["center"][1], "s", color="#00cd6c", markeredgecolor="black",
-            markersize=11.0, label="grid center")
     ax.plot(d["grid_min"][0], d["grid_min"][1], "*", color="#ff3333", markeredgecolor="black",
             markersize=20.0, label=f"min  E={lo:.6f} Eh")
 

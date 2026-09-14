@@ -42,7 +42,8 @@ GENERATOR         = "polynomial"
 SWEEP_SIGMA       = 0.1
 SWEEP_GEN_SIZE    = 6
 SWEEP_MAX_GENS    = 100
-SWEEP_STOPPING    = True     # last-5-best-energies-within-1e-6 early stop
+SWEEP_STOPPING    = True     # early stop once the last 5 generation bests agree to SWEEP_STOP_TOL
+SWEEP_STOP_TOL    = 1e-6     # that threshold (Eh); floored by the QC code's printed precision
 TOTAL_THREADS     = 6        # core budget: run TOTAL_THREADS // THREADS_PER_SHELL shells at once
 THREADS_PER_SHELL = 3
 USE_EXTRAPOLATION = True
@@ -150,6 +151,7 @@ else:
         generation_size   = SWEEP_GEN_SIZE,
         max_generations   = SWEEP_MAX_GENS,
         use_stopping      = SWEEP_STOPPING,
+        stop_tol          = SWEEP_STOP_TOL,
         total_threads     = TOTAL_THREADS,
         threads_per_shell = THREADS_PER_SHELL,
         use_extrapolation = USE_EXTRAPOLATION,

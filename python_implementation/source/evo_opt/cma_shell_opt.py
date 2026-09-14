@@ -51,6 +51,7 @@ class Shell_Optimization:
         cma_state: list | None        = None,
         logging: bool                 = False,
         use_stopping: bool            = False,
+        stop_tol: float               = 1e-6,
         contract_frozen_shells: bool  = False,
         use_tempering: bool           = False,
         n_tempering_params: int       = 6,
@@ -68,6 +69,7 @@ class Shell_Optimization:
         self._cma_state              = cma_state
         self._logging                = logging
         self._use_stopping           = use_stopping
+        self._stop_tol               = stop_tol
         self._contract_frozen_shells = contract_frozen_shells
         self._use_tempering          = use_tempering
         self._n_tempering_params     = n_tempering_params
@@ -306,8 +308,8 @@ class Shell_Optimization:
                         _ScalarES(mean_1d, sigma_1d), best_exp_gen,
                     )
 
-                    if self._use_stopping and _last5_converged(recent_best_energies):
-                        logger.log_stop("last 5 best energies within 1e-6", gen, float(best_e), _ScalarES(mean_1d, sigma_1d))
+                    if self._use_stopping and _last5_converged(recent_best_energies, self._stop_tol):
+                        logger.log_stop(f"last 5 best energies within {self._stop_tol:.1e}", gen, float(best_e), _ScalarES(mean_1d, sigma_1d))
                         break
 
                 return
@@ -405,8 +407,8 @@ class Shell_Optimization:
                         "best_energy_overall": float(best_energy_overall),
                     })
 
-                if self._use_stopping and _last5_converged(recent_best_energies):
-                    logger.log_stop("last 5 best energies within 1e-6", gen, float(best_energy), es)
+                if self._use_stopping and _last5_converged(recent_best_energies, self._stop_tol):
+                    logger.log_stop(f"last 5 best energies within {self._stop_tol:.1e}", gen, float(best_energy), es)
                     break
 
         except Exception as exc:

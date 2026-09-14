@@ -37,7 +37,9 @@ class Sweep_Config:
     sigma:           float = 0.1          # CMA step-size (CMA adapts it internally from here)
     generation_size: int   = 6            # CMA population per generation
     max_generations: int   = 100          # hard cap; the early-stop should end well before this
-    use_stopping:    bool  = True         # last-5-best-energies-within-1e-6 early stop
+    use_stopping:    bool  = True         # early stop once the last 5 generation bests agree to stop_tol
+    stop_tol:        float = 1e-6         # that agreement threshold (Eh). Tighten to pin the optimum
+                                          # harder; the floor is the QC code's printed precision.
 
     # core budget: run total_threads // threads_per_shell shells concurrently, each CMA
     # run using threads_per_shell cores.
@@ -125,6 +127,7 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
             use_tempering          = True,
             n_tempering_params     = min(cfg.m_params, N),   # clamp: N<M routes to the 1-D optimiser, not a degenerate 2-D
             use_stopping           = cfg.use_stopping,
+            stop_tol               = cfg.stop_tol,
             seed                   = seed,
         )
         opt.start(threads=threads)
