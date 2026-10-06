@@ -19,6 +19,17 @@ class Optimize_Config:
     work_dir:   Path
     expo_file:  str            # basis to optimize — a name in the submit dir, or an absolute path (e.g. target's handoff)
 
+    # scheduling strategy. Everything else — staging, contraction bootstrap, the objectives,
+    # Shell_Optimization, the global evals, the reporting — is shared, so a joint/cyclic
+    # comparison isolates the scheduler and nothing else.
+    #   "joint"  : every optimized shell runs concurrently against the backdrop built ONCE
+    #              before the run; shells never see each other mid-run (unless
+    #              enable_cross_shell) and only meet in the periodic global evals.
+    #   "cyclic" : block Gauss-Seidel. One shell at a time, its best committed into the
+    #              shared basis before the next shell starts, so each shell optimizes
+    #              against every earlier commit. No parallelism across shells.
+    mode: str = "joint"
+
     template_cont:  str = "temp_cont.inp"    # contracted frozen shells
     template_full:  str = "temp_full.inp"    # fully uncontracted
     run_script:     str = "run.sh"
@@ -51,6 +62,31 @@ class Optimize_Config:
     enable_cross_shell:      bool = False
     cross_shell_warmup_gens: int  = 20   # all shells must reach this many gens before coupling starts
 
+    # ── cyclic mode only (ignored when mode == "joint") ──
+    cyclic_cycles:         int   = 10     # full passes over the optimized shells
+    cyclic_gens_per_visit: int   = 100     # generation ceiling for one shell visit
+    cyclic_use_stopping:   bool  = True   # commit early if that shell's last 5 gen bests agree to cyclic_stop_tol
+    cyclic_stop_tol:       float = 1e-6
+    cyclic_warm_restart:   bool  = True   # continue the shell's CMA from its previous visit (mean, sigma, C and
+                                          # both evolution paths); False restarts at `sigma` every visit, which
+                                          # re-pays step-size adaptation each time and handicaps cyclic
+    cyclic_shell_order:    list | None = None   # visit order, e.g. [4, 3, 2, 1, 0]; None -> ascending l.
+                                                # Coordinate-descent results depend on it, so it is a knob.
+
+    # CMA-ES seed handed to every per-shell optimizer unchanged. int -> reproducible per-shell
+    # trajectories; None -> random. In joint mode global-eval timing stays wall-clock dependent,
+    # so the sequence of global evals is NOT reproducible even with a seed set; cyclic mode is
+    # fully deterministic under a seed (one shell at a time, fixed order).
+    seed: int | None = None
+
+    # Subdirectory of submit_dir/results to write this run's outputs into. Empty means
+    # results/ itself, which is the historical behaviour. Set it when several runs share a
+    # submit dir — otherwise each run overwrites the previous one's trace, log and best.expo.
+    results_subdir: str = ""
+
+
+MODES = ("joint", "cyclic")
+
 
 def per_shell(value, n: int, name: str) -> list:
     """Broadcast an int, or validate a list, to one value per shell."""
@@ -61,10 +97,43 @@ def per_shell(value, n: int, name: str) -> list:
     return list(value)
 
 
+def job_counts(n_gen_jobs: int, n_init_jobs: int, n_full_jobs: int, use_contraction: bool) -> dict:
+    """MOLCAS job counts, split by which template the job ran. A contracted job
+    (template_cont, only the active shell free) and a fully uncontracted one
+    (template_full) are very different amounts of compute, so a bare job total
+    understates whichever mode leans on the expensive kind.
+
+      n_gen_jobs  - per-shell CMA generation jobs   (template_cont)
+      n_init_jobs - per-shell starting-point evals  (template_cont)
+      n_full_jobs - global / commit evals           (template_full)
+
+    The one bootstrap eval every run pays is included and is always uncontracted.
+    With contraction off every job is uncontracted and 'contracted' is 0.
+
+    Both schedulers report through this, so the two modes' numbers mean the same thing."""
+    shell_jobs   = n_gen_jobs + n_init_jobs
+    uncontracted = n_full_jobs + 1                  # +1: the shared bootstrap eval
+    contracted   = shell_jobs if use_contraction else 0
+    if not use_contraction:
+        uncontracted += shell_jobs
+    return {
+        "total":        shell_jobs + n_full_jobs + 1,
+        "contracted":   contracted,
+        "uncontracted": uncontracted,
+        "gens":         n_gen_jobs,
+        "init":         n_init_jobs,
+        "full":         n_full_jobs,
+    }
+
+
+TRACE_HEADER = ["eval_idx", "t_launch", "t_done", "jobs_total", "jobs_contracted",
+                "jobs_uncontracted", "global_energy", "delta_e", "best_energy"]
+
+
 def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
     SUBMIT_DIR  = Path(cfg.submit_dir).resolve()
     WORK_DIR    = (Path(cfg.work_dir) / "optimize").resolve()
-    RESULTS_DIR = SUBMIT_DIR / "results"
+    RESULTS_DIR = SUBMIT_DIR / "results" / cfg.results_subdir if cfg.results_subdir else SUBMIT_DIR / "results"
 
     START_DIR = WORK_DIR / "Start"
     START_DIR.mkdir(parents=True, exist_ok=True)
@@ -92,6 +161,24 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
     _gen_sizes     = per_shell(cfg.generation_size,   _n_flags, "GENERATION_SIZE")
     _threads_shell = per_shell(cfg.threads_per_shell, _n_flags, "THREADS_PER_SHELL")
 
+    if cfg.mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}, got {cfg.mode!r}")
+
+    # results_subdir adds exactly ONE level under results/ and nothing else. Without this,
+    # pathlib would let an absolute value replace the whole path and a ".." escape it.
+    if cfg.results_subdir:
+        _sub = Path(cfg.results_subdir)
+        if _sub.is_absolute() or len(_sub.parts) != 1 or cfg.results_subdir in (".", ".."):
+            raise ValueError(f"results_subdir must be a single plain directory name, got "
+                             f"{cfg.results_subdir!r}")
+
+    # Cross-shell coupling is a joint-mode device: it exists to un-stale the backdrop that
+    # joint shells share. Cyclic refreshes the backdrop at every commit by construction, so
+    # the flag would be silently ignored — say so instead.
+    if cfg.mode == "cyclic" and cfg.enable_cross_shell:
+        raise ValueError("enable_cross_shell has no meaning in cyclic mode: each commit already "
+                         "refreshes the backdrop for the next shell. Leave it off.")
+
     # Cross-shell coupling only ever runs inside a global eval, which cannot start
     # before its own warmup. A coupling warmup below the global-eval warmup would be
     # silently clamped up to it, so reject that combination rather than mislead.
@@ -101,8 +188,6 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
             f"({cfg.global_eval_warmup_gens}); coupling happens during a global eval and cannot "
             f"fire before global evals begin."
         )
-
-    GEN_CEILING = cfg.max_generations * cfg.gen_ceiling_multiplier   # hard per-shell generation cap
 
     # ─── load basis and validate flags ────────────────────────────────────────
 
@@ -152,11 +237,33 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
         base.uncontract_all()
         contract_frozen = False
 
+    # ─── dispatch ─────────────────────────────────────────────────────────────
+    # Both schedulers are peers: same signature, same setup above, differing only in
+    # how they schedule the per-shell searches. Keep it that way — a joint/cyclic
+    # comparison is only meaningful while everything else is shared.
+    if cfg.mode == "cyclic":
+        return run_cyclic(cfg, basis, base, contract_frozen, objective, full_objective,
+                          init_uncontracted, flags, _gen_sizes, _threads_shell, _n_flags,
+                          WORK_DIR, RESULTS_DIR)
+    return run_joint(cfg, basis, base, contract_frozen, objective, full_objective,
+                     init_uncontracted, flags, _gen_sizes, _threads_shell, _n_flags,
+                     WORK_DIR, RESULTS_DIR)
+
+
+def run_joint(cfg, basis, base, contract_frozen, objective, full_objective,
+              init_uncontracted, flags, gen_sizes, threads_shell, n_flags,
+              work_dir, results_dir) -> tuple[Exponent_Set, float, float]:
+    """Parallel scheduler: every optimized shell runs concurrently against the backdrop
+    built once before the run, and the shells meet only in the periodic global evals.
+    Called by run_optimize for mode == "joint"; peer of run_cyclic."""
+
+    GEN_CEILING = cfg.max_generations * cfg.gen_ceiling_multiplier   # hard per-shell generation cap
+
     # ─── initialise per-shell optimizers ──────────────────────────────────────
 
     optimizers: dict[int, Shell_Optimization] = {}
 
-    for shell_idx in range(_n_flags):
+    for shell_idx in range(n_flags):
         if flags[shell_idx] == 0:
             continue
 
@@ -179,7 +286,7 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
         # else: base is already fully uncontracted
 
         init_result = evaluate_initial(
-            shell_start, objective, WORK_DIR / f"initial_shell_{shell_idx}",
+            shell_start, objective, work_dir / f"initial_shell_{shell_idx}",
             threads=1, contract_frozen_shells=contract_frozen,   # single job — extra threads would be idle
         )
         print(f"  shell {shell_idx} ({lbl}) initial energy : {init_result.energy:.10f} Eh")
@@ -188,8 +295,8 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
             init_result,
             float(init_result.energy),
             objective,
-            work_dir               = WORK_DIR / f"cma_shell_{shell_idx}",
-            generation_size        = _gen_sizes[shell_idx],
+            work_dir               = work_dir / f"cma_shell_{shell_idx}",
+            generation_size        = gen_sizes[shell_idx],
             sigma                  = cfg.sigma,
             max_generations        = GEN_CEILING,
             active_shell           = shell_idx,
@@ -198,6 +305,7 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
             contract_frozen_shells = contract_frozen,
             use_tempering          = use_tempering_shell,
             n_tempering_params     = shell_n_tempering,
+            seed                   = cfg.seed,
         )
 
     if not optimizers:
@@ -211,18 +319,19 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
     print(f"Spacing           : {cfg.global_eval_spacing_gens} gens between triggers")
     print(f"Max concurrent    : {cfg.threads_global} global evals")
     print(f"Early stop        : {'on' if cfg.early_stop else 'off'}"
-          + (f" (last {cfg.early_stop_window} globals within {cfg.early_stop_tol:.1e} Eh)" if cfg.early_stop else "") + "\n")
+          + (f" (last {cfg.early_stop_window} globals within {cfg.early_stop_tol:.1e} Eh)" if cfg.early_stop else ""))
+    print(f"Seed              : {cfg.seed if cfg.seed is not None else 'random (per-shell runs NOT reproducible)'}\n")
 
     # ─── start all optimizers ─────────────────────────────────────────────────
 
     t0 = time.time()
 
     for shell_idx in sorted(optimizers):
-        optimizers[shell_idx].start(threads=_threads_shell[shell_idx])
+        optimizers[shell_idx].start(threads=threads_shell[shell_idx])
 
     # ─── global eval infrastructure ───────────────────────────────────────────
 
-    GLOBAL_EVAL_DIR = WORK_DIR / "global_evals"
+    GLOBAL_EVAL_DIR = work_dir / "global_evals"
     GLOBAL_EVAL_DIR.mkdir(parents=True, exist_ok=True)
 
     E0         = float(init_uncontracted.energy)
@@ -238,14 +347,15 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
     global_energies: list[float] = []
     early_stop_flag = {"stop": False}
 
-    csv_f = open(RESULTS_DIR / "global_trace.csv", "w", newline="")
-    log_f = open(RESULTS_DIR / "global.log", "w")
+    csv_f = open(results_dir / "global_trace.csv", "w", newline="")
+    log_f = open(results_dir / "global.log", "w")
     csv_w = csv.writer(csv_f)
 
-    csv_w.writerow(
-        ["eval_idx", "time_sec", "total_molcas_jobs", "global_energy", "delta_e"]
-        + [f"shell_{idx}_gen_at_trigger" for idx in sorted(optimizers)]
-    )
+    # t_launch is when the snapshot was taken, t_done when its energy came back. The energy
+    # and the job counts describe the basis at t_launch, so t_launch is the timestamp to plot
+    # energy against; t_done is one full MOLCAS job later. best_energy is logged so the
+    # stopping behaviour can be re-judged offline from the trace alone.
+    csv_w.writerow(TRACE_HEADER + [f"shell_{idx}_gen_at_trigger" for idx in sorted(optimizers)])
     csv_f.flush()
 
     def collect_combined() -> Exponent_Set:
@@ -258,33 +368,32 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
                 combined.set_shell_exponents(idx, state["best_exp"].exponents[idx])
         return combined
 
-    def total_molcas_jobs(gens: dict, n_full_evals: int) -> int:
-        """Freeze-frame count of MOLCAS jobs completed:
-          - shell optimizers: for each optimized shell, completed generations
-            (gen index + 1) times its population size
-          - full (global) evals: one job each
-        Excludes the few fixed single-job startup evals (bootstrap + per-shell init)."""
-        shell_jobs = sum(max(gens.get(idx, -1) + 1, 0) * _gen_sizes[idx] for idx in optimizers)
-        return shell_jobs + n_full_evals
+    def total_molcas_jobs(gens: dict, n_full_evals: int) -> dict:
+        """Freeze-frame job counts. Generation jobs are derived from each shell's generation
+        index rather than instrumented, since they are issued inside Shell_Optimization; the
+        per-shell init evals (one per optimized shell, at startup) are counted too."""
+        gen_jobs = sum(max(gens.get(idx, -1) + 1, 0) * gen_sizes[idx] for idx in optimizers)
+        return job_counts(gen_jobs, len(optimizers), n_full_evals, cfg.use_contraction)
 
-    def global_eval_worker(eval_idx, snapshot, trigger_gens):
+    def global_eval_worker(eval_idx, snapshot, trigger_gens, t_launch):
         eval_dir = GLOBAL_EVAL_DIR / f"eval_{eval_idx:04d}"
         results  = full_objective.evaluate_batch([snapshot], work_dir=eval_dir, threads=1)
         energy   = float(results[0].energy)
-        elapsed  = time.time() - t0
+        t_done   = time.time() - t0
         delta_e  = energy - E0
-        jobs_done = total_molcas_jobs(trigger_gens, eval_idx + 1)   # +1: this full eval just finished
+        jobs     = total_molcas_jobs(trigger_gens, eval_idx + 1)   # +1: this full eval just finished
 
         with best_lock:
             if energy < best_state["best_energy"]:
                 best_state["best_energy"]     = energy
                 best_state["best_exp"]        = results[0].copy(no_energy=True)
                 best_state["best_exp"].energy = energy
-                best_state["best_exp"].save(RESULTS_DIR, "best", overwrite=True)
+                best_state["best_exp"].save(results_dir, "best", overwrite=True)
             best_so_far = best_state["best_energy"]
 
             line = (
-                f"[GlobalEval {eval_idx:4d}] T {elapsed:.1f}s | Jobs {jobs_done} | "
+                f"[GlobalEval {eval_idx:4d}] T {t_launch:.1f}->{t_done:.1f}s | "
+                f"Jobs {jobs['total']} (c {jobs['contracted']} / u {jobs['uncontracted']}) | "
                 f"E {energy:.10f} | ΔE {delta_e:+.8f} | BestE {best_so_far:.10f}"
             )
             print(line)
@@ -292,7 +401,8 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
             log_f.flush()
 
             csv_w.writerow(
-                [eval_idx, elapsed, jobs_done, energy, delta_e]
+                [eval_idx, f"{t_launch:.3f}", f"{t_done:.3f}", jobs["total"],
+                 jobs["contracted"], jobs["uncontracted"], energy, delta_e, best_so_far]
                 + [trigger_gens.get(idx, -1) for idx in sorted(optimizers)]
             )
             csv_f.flush()
@@ -372,7 +482,7 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
             if ready:
                 t = Thread(
                     target=global_eval_worker,
-                    args=(trigger_idx, collect_combined(), dict(current_gens)),
+                    args=(trigger_idx, collect_combined(), dict(current_gens), time.time() - t0),
                     daemon=True,
                 )
                 t.start()
@@ -407,12 +517,15 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
     # ─── final global eval ────────────────────────────────────────────────────
 
     final_gens = {idx: optimizers[idx].get_state()["generation"] for idx in sorted(optimizers)}
-    global_eval_worker(trigger_idx, collect_combined(), final_gens)
+    global_eval_worker(trigger_idx, collect_combined(), final_gens, time.time() - t0)
 
+    jobs = total_molcas_jobs(final_gens, trigger_idx + 1)
     summary = (
-        f"[Summary] total walltime {time.time() - t0:.1f}s | "
-        f"total MOLCAS jobs {total_molcas_jobs(final_gens, trigger_idx + 1)} | "
-        f"best E {best_state['best_energy']:.10f} (ΔE {best_state['best_energy'] - E0:+.10f})"
+        f"[Summary] mode joint | total walltime {time.time() - t0:.1f}s\n"
+        f"          MOLCAS jobs {jobs['total']}: "
+        f"{jobs['contracted']} contracted (template_cont) + {jobs['uncontracted']} uncontracted (template_full)\n"
+        f"          by stage: {jobs['gens']} generation + {jobs['init']} shell init + {jobs['full']} global + 1 bootstrap\n"
+        f"          best E {best_state['best_energy']:.10f} (ΔE {best_state['best_energy'] - E0:+.10f})"
     )
     print(summary)
     log_f.write(summary + "\n")
@@ -422,3 +535,222 @@ def run_optimize(cfg: Optimize_Config) -> tuple[Exponent_Set, float, float]:
 
     # E0 = uncontracted energy of the target basis before optimization (for the pipeline report)
     return best_state["best_exp"], best_state["best_energy"], E0
+
+
+def run_cyclic(cfg, basis, base, contract_frozen, objective, full_objective,
+               init_uncontracted, flags, gen_sizes, threads_shell, n_flags,
+               work_dir, results_dir) -> tuple[Exponent_Set, float, float]:
+    """Block Gauss-Seidel scheduler: optimize one shell, commit it, refresh the backdrop,
+    move to the next. Called by run_optimize for mode == "cyclic"; the setup it receives is
+    byte-identical to what joint mode uses, so the only difference is the schedule.
+
+    The post-commit fully-uncontracted eval does double duty — it regenerates the
+    contraction for the next shell AND is the global-energy trace point, so cyclic's trace
+    lands on the same axes as joint's at no extra cost."""
+
+    shells = [i for i in range(n_flags) if flags[i] == 1 and len(basis.exponents[i]) >= 1]
+    if not shells:
+        raise RuntimeError("No shells to optimize after filtering.")
+
+    if cfg.cyclic_shell_order is None:
+        order = list(shells)
+    else:
+        order = list(cfg.cyclic_shell_order)
+        if sorted(order) != sorted(shells):
+            raise ValueError(f"cyclic_shell_order {order} must be a permutation of the "
+                             f"optimized shells {shells}")
+
+    E0          = float(init_uncontracted.energy)
+    best_energy = E0
+    best_exp    = init_uncontracted.copy(no_energy=True)
+    best_exp.energy = E0
+
+    current = base.copy(no_energy=True)   # the committed basis; carries the contraction when on
+
+    resume          = {}                      # shell -> resume state from its last visit
+    cum_gens        = {s: 0 for s in shells}   # generations that shell has run in total
+    jobs            = {"gens": 0, "init": 0, "full": 0}
+    global_energies = []
+
+    print(f"\nMode              : cyclic (Gauss-Seidel, one shell at a time)")
+    print(f"Visit order       : {order}  ({', '.join(L_LABELS[s] for s in order)})")
+    print(f"Cycles            : {cfg.cyclic_cycles}")
+    print(f"Gens per visit    : {cfg.cyclic_gens_per_visit}"
+          + (f" (early commit if last 5 agree to {cfg.cyclic_stop_tol:.1e})" if cfg.cyclic_use_stopping else ""))
+    print(f"Budget per shell  : {cfg.cyclic_cycles * cfg.cyclic_gens_per_visit} gens "
+          f"(match this to joint's max_generations for an equal-budget run)")
+    print(f"Warm restart      : {'on (CMA continued across visits: mean, sigma, C, paths)' if cfg.cyclic_warm_restart else 'off (fresh CMA each visit)'}")
+    print(f"Contraction       : {'on (refreshed after every commit)' if contract_frozen else 'off (fully uncontracted)'}")
+    print(f"Early stop        : {'on' if cfg.early_stop else 'off'}"
+          + (f" (last {cfg.early_stop_window} commits within {cfg.early_stop_tol:.1e} Eh)" if cfg.early_stop else ""))
+    print(f"Seed              : {cfg.seed if cfg.seed is not None else 'random'}\n")
+
+    csv_f = open(results_dir / "global_trace.csv", "w", newline="")
+    log_f = open(results_dir / "cyclic.log", "w")
+    cyc_f = open(results_dir / "cyclic_trace.csv", "w", newline="")
+    csv_w = csv.writer(csv_f)
+    cyc_w = csv.writer(cyc_f)
+
+    # same schema joint writes, so the two modes' traces plot on one axis
+    csv_w.writerow(TRACE_HEADER + [f"shell_{s}_gen_at_trigger" for s in shells])
+    csv_f.flush()
+
+    # per-visit detail: the job cost split both by stage and by template, so the
+    # comparison against joint can be made on whichever accounting the paper argues for
+    cyc_w.writerow(["cycle", "shell", "l", "gens_run", "committed_early", "E_before", "E_after",
+                    "dE_shell", "E_global", "dE_global", "best_energy", "sigma_end",
+                    "jobs_gens", "jobs_init", "jobs_full", "jobs_contracted",
+                    "jobs_uncontracted", "jobs_total", "t_launch", "t_done"])
+    cyc_f.flush()
+
+    def emit(msg):
+        print(msg, flush=True)
+        log_f.write(msg + "\n")
+        log_f.flush()
+
+    t0        = time.time()
+    eval_idx  = 0
+    stop_now  = False
+    e_prev    = E0
+
+    for cycle in range(cfg.cyclic_cycles):
+        emit(f"\n───── cycle {cycle + 1}/{cfg.cyclic_cycles} ─────")
+
+        for k in range(len(order)):
+            shell = order[k]
+            lbl   = L_LABELS[shell]
+            n_exp = len(current.exponents[shell])
+
+            use_tempering_shell = cfg.use_tempering and n_exp > 1
+            shell_n_tempering   = min(cfg.n_tempering_params, n_exp) if use_tempering_shell else cfg.n_tempering_params
+
+            visit_dir   = work_dir / f"cycle_{cycle:03d}" / f"shell_{shell}"
+            shell_start = current.copy(no_energy=True)
+            if contract_frozen:
+                shell_start.uncontract_shell(shell)   # active shell free, every other shell stays contracted
+
+            init = evaluate_initial(shell_start, objective, visit_dir, threads=1,
+                                    subdir_name="init", contract_frozen_shells=contract_frozen)
+            jobs["init"] += 1
+            e_before      = float(init.energy)
+
+            opt = Shell_Optimization(
+                init, e_before, objective,
+                work_dir               = visit_dir / "cma",
+                generation_size        = gen_sizes[shell],
+                sigma                  = cfg.sigma,
+                max_generations        = cfg.cyclic_gens_per_visit,
+                active_shell           = shell,
+                overwrite              = True,
+                logging                = False,
+                contract_frozen_shells = contract_frozen,
+                use_tempering          = use_tempering_shell,
+                n_tempering_params     = shell_n_tempering,
+                use_stopping           = cfg.cyclic_use_stopping,
+                stop_tol               = cfg.cyclic_stop_tol,
+                seed                   = cfg.seed,
+                resume_state           = resume.get(shell) if cfg.cyclic_warm_restart else None,
+            )
+            opt.start(threads=threads_shell[shell])
+            opt.wait()
+            if opt.exception is not None:
+                emit(f"  [ABORT] shell {shell} ({lbl}) crashed in cycle {cycle}")
+                csv_f.close()
+                cyc_f.close()
+                log_f.close()
+                raise RuntimeError(f"Shell {shell} ({lbl}) optimizer crashed in cycle {cycle}; "
+                                   f"aborting run.") from opt.exception
+
+            state    = opt.get_state()
+            gens_run = max(state["generation"] + 1, 0)
+            e_after  = float(state["best_energy"]) if state["best_energy"] is not None else e_before
+            early    = gens_run < cfg.cyclic_gens_per_visit
+            jobs["gens"]    += gens_run * gen_sizes[shell]
+            cum_gens[shell] += gens_run
+
+            if cfg.cyclic_warm_restart:
+                rs = opt.get_resume_state()
+                if rs is not None:
+                    resume[shell] = rs
+
+            if state["best_exp"] is not None:
+                current.set_shell_exponents(shell, state["best_exp"].exponents[shell])
+
+            # propagate forward: one fully-uncontracted eval of the committed basis. Its
+            # energy is the trace point; its contraction becomes the next shell's backdrop.
+            combined = current.copy(no_energy=True)
+            combined.uncontract_all()
+            t_launch = time.time() - t0      # the instant this energy describes
+            full = full_objective.evaluate_batch([combined], work_dir=visit_dir / "global", threads=1)
+            jobs["full"] += 1
+            e_global      = float(full[0].energy)
+
+            if contract_frozen:
+                if full[0].resulting_contraction is None:
+                    raise RuntimeError(f"commit eval for shell {shell} produced no contraction; "
+                                       f"cannot refresh the backdrop.")
+                current = full[0].copy(no_energy=True)
+                current.change_contraction(full[0].resulting_contraction)
+            else:
+                current = full[0].copy(no_energy=True)
+                current.uncontract_all()
+
+            if e_global < best_energy:
+                best_energy     = e_global
+                best_exp        = full[0].copy(no_energy=True)
+                best_exp.energy = e_global
+                best_exp.save(results_dir, "best", overwrite=True)
+
+            counts    = job_counts(jobs["gens"], jobs["init"], jobs["full"], cfg.use_contraction)
+            t_done    = time.time() - t0
+            sigma_end = state["sigma"] if state["sigma"] is not None else float("nan")
+
+            emit(f"  [cycle {cycle + 1} | shell {shell} ({lbl})] {gens_run:3d} gens"
+                 f"{' (early)' if early else '        '} | "
+                 f"E_shell {e_before:.10f} -> {e_after:.10f} ({e_after - e_before:+.2e}) | "
+                 f"E_global {e_global:.10f} ({e_global - e_prev:+.2e}) | "
+                 f"Best {best_energy:.10f} | sigma {sigma_end:.3e} | "
+                 f"Jobs {counts['total']} (c {counts['contracted']} / u {counts['uncontracted']})")
+
+            csv_w.writerow([eval_idx, f"{t_launch:.3f}", f"{t_done:.3f}", counts["total"],
+                            counts["contracted"], counts["uncontracted"],
+                            e_global, e_global - E0, best_energy]
+                           + [cum_gens[s] for s in shells])
+            csv_f.flush()
+            cyc_w.writerow([cycle, shell, lbl, gens_run, int(early),
+                            f"{e_before:.10f}", f"{e_after:.10f}", f"{e_after - e_before:+.10f}",
+                            f"{e_global:.10f}", f"{e_global - E0:+.10f}", f"{best_energy:.10f}",
+                            f"{sigma_end:.6e}", counts["gens"], counts["init"], counts["full"],
+                            counts["contracted"], counts["uncontracted"], counts["total"],
+                            f"{t_launch:.3f}", f"{t_done:.3f}"])
+            cyc_f.flush()
+
+            eval_idx += 1
+            e_prev    = e_global
+
+            global_energies.append(e_global)
+            if cfg.early_stop and len(global_energies) >= cfg.early_stop_window:
+                window = global_energies[-cfg.early_stop_window:]
+                spread = max(window) - min(window)
+                if spread < cfg.early_stop_tol:
+                    emit(f"  [EarlyStop] last {cfg.early_stop_window} commits within "
+                         f"{cfg.early_stop_tol:.1e} Eh (spread {spread:.2e}); stopping.")
+                    stop_now = True
+                    break
+
+        if stop_now:
+            break
+
+    counts = job_counts(jobs["gens"], jobs["init"], jobs["full"], cfg.use_contraction)
+    emit(f"\n[Summary] mode cyclic | total walltime {time.time() - t0:.1f}s\n"
+         f"          MOLCAS jobs {counts['total']}: "
+         f"{counts['contracted']} contracted (template_cont) + {counts['uncontracted']} uncontracted (template_full)\n"
+         f"          by stage: {counts['gens']} generation + {counts['init']} visit init + "
+         f"{counts['full']} commit + 1 bootstrap\n"
+         f"          best E {best_energy:.10f} (dE {best_energy - E0:+.10f})")
+
+    csv_f.close()
+    cyc_f.close()
+    log_f.close()
+
+    return best_exp, best_energy, E0

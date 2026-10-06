@@ -44,7 +44,7 @@ SWEEP_GEN_SIZE    = 6
 SWEEP_MAX_GENS    = 100
 SWEEP_STOPPING    = True     # early stop once the last 5 generation bests agree to SWEEP_STOP_TOL
 SWEEP_STOP_TOL    = 1e-6     # that threshold (Eh); floored by the QC code's printed precision
-TOTAL_THREADS     = 6        # core budget: run TOTAL_THREADS // THREADS_PER_SHELL shells at once
+TOTAL_THREADS     = 6        # core budget: run TOTAL_THREADS // THREADS_PER_SHELL shells at once 
 THREADS_PER_SHELL = 3
 USE_EXTRAPOLATION = True
 N_FIT_POINTS      = 4
@@ -68,7 +68,25 @@ TARGET_N_FIT      = 4         # optima nearest the target N used for the param e
 
 
 
-# ── stage 3: OPTIMIZE (thorough all-shells-in-parallel CMA on target's .expo) ──
+# ── stage 3: OPTIMIZE (thorough CMA on target's .expo) ──
+# OPT_MODE picks the scheduler; everything else in this block is shared by both, so a
+# joint-vs-cyclic run isolates the schedule and nothing else.
+#   "joint"  : all shells at once against the backdrop built ONCE before the run; shells
+#              meet only in the global evals. Uses OPT_MAX_GENS / GEN_CEILING_MULTIPLIER.
+#   "cyclic" : one shell at a time, committed and the backdrop refreshed before the next
+#              starts. Uses the CYCLIC_* knobs below; OPT_MAX_GENS is ignored.
+# For an equal-budget comparison set CYCLIC_CYCLES * CYCLIC_GENS_PER_VISIT == OPT_MAX_GENS.
+OPT_MODE = "joint"
+
+CYCLIC_CYCLES         = 10     # full passes over the optimized shells
+CYCLIC_GENS_PER_VISIT = 30     # generation ceiling per shell visit (10 * 30 = 300 = OPT_MAX_GENS)
+CYCLIC_USE_STOPPING   = True   # commit early if that shell's last 5 gen bests agree to CYCLIC_STOP_TOL
+CYCLIC_STOP_TOL       = 1e-6
+CYCLIC_WARM_RESTART   = True   # continue the shell's CMA from its previous visit (mean, sigma, C and both
+                               # evolution paths). False restarts at OPT_SIGMA every visit, re-paying
+                               # step-size adaptation each time — that handicaps cyclic, so say so if used.
+CYCLIC_SHELL_ORDER    = None   # visit order, e.g. [4, 3, 2, 1, 0]; None -> ascending l
+
 # OPTIMIZE_FLAGS must be no longer than the number of shells target produces (= SHELLS above).
 OPTIMIZE_FLAGS         = [1, 1, 1, 1, 1]  # 1 = optimize, 0 = freeze; may be shorter than n_shells
 OPT_GEN_SIZE           = [6, 6, 6, 6, 6]  # int, or one entry per OPTIMIZE_FLAGS entry
@@ -86,6 +104,9 @@ EARLY_STOP_WINDOW = 5
 EARLY_STOP_TOL    = 1e-5
 ENABLE_CROSS_SHELL      = False
 CROSS_SHELL_WARMUP_GENS = 20
+OPT_SEED                = None   # int -> every per-shell CMA uses it (reproducible shell trajectories);
+                                 # None -> random. Global-eval timing is wall-clock driven, so the global
+                                 # trace is not reproducible either way.
 
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
@@ -183,6 +204,13 @@ optimize_cfg = Optimize_Config(
     submit_dir               = _args.submit_dir,
     work_dir                 = _args.work_dir,
     expo_file                = str(start_expo),   # absolute path handed over from target
+    mode                     = OPT_MODE,
+    cyclic_cycles            = CYCLIC_CYCLES,
+    cyclic_gens_per_visit    = CYCLIC_GENS_PER_VISIT,
+    cyclic_use_stopping      = CYCLIC_USE_STOPPING,
+    cyclic_stop_tol          = CYCLIC_STOP_TOL,
+    cyclic_warm_restart      = CYCLIC_WARM_RESTART,
+    cyclic_shell_order       = CYCLIC_SHELL_ORDER,
     template_cont            = TEMPLATE_CONT,
     template_full            = TEMPLATE_FULL,
     run_script               = RUN_SCRIPT,
@@ -204,6 +232,7 @@ optimize_cfg = Optimize_Config(
     early_stop_tol           = EARLY_STOP_TOL,
     enable_cross_shell       = ENABLE_CROSS_SHELL,
     cross_shell_warmup_gens  = CROSS_SHELL_WARMUP_GENS,
+    seed                     = OPT_SEED,
 )
 print("\n########## STAGE 3/3 : OPTIMIZE ##########\n")
 best_exp, best_energy, e_target_unopt = run_optimize(optimize_cfg)

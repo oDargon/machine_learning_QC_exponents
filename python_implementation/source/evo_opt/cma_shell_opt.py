@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 from threading import Thread, Lock, Event
 from numpy import exp, log, float64, ndarray, array
@@ -56,6 +57,7 @@ class Shell_Optimization:
         use_tempering: bool           = False,
         n_tempering_params: int       = 6,
         seed: int | None              = None,
+        resume_state: dict | None     = None,
     ) -> None:
         self._start_exp              = start_exp
         self._start_energy           = start_energy
@@ -74,6 +76,7 @@ class Shell_Optimization:
         self._use_tempering          = use_tempering
         self._n_tempering_params     = n_tempering_params
         self._seed                   = seed
+        self._resume_state           = resume_state
 
         self._lock        = Lock()
         self._stop_event  = Event()
@@ -86,6 +89,7 @@ class Shell_Optimization:
         self._sigma_snapshot = None
         self._mean_snapshot  = None
         self._history        = []   # per-generation trajectory records (see history property)
+        self._resume_snapshot = None
 
         self._pending_root_exp = None
 
@@ -173,6 +177,37 @@ class Shell_Optimization:
                 "best_exp":    self._best_exp,
             }
 
+    def get_resume_state(self) -> dict | None:
+        """Everything needed to continue this search where it left off, for a later
+        Shell_Optimization constructed with resume_state=<this>. None until the first
+        generation completes.
+
+        The N-D path carries the whole CMAEvolutionStrategy. Reconstructing a fresh one
+        and assigning mean/sigma/sm.C instead (what the legacy cma_state hook does) leaves
+        the sampler's cached decomposition inconsistent with C, and `cma` raises
+        "a sampler variance has become negative" a visit or two later. Carrying the object
+        also keeps sigma, C, and both evolution paths (ps, pc) — sigma especially, since it
+        took the entire visit to adapt and restarting at the configured sigma discards it."""
+        with self._lock:
+            snap = self._resume_snapshot
+            if snap is None:
+                return None
+            if snap["kind"] == "nd":
+                return {"kind": "nd", "dim": snap["dim"], "es": deepcopy(snap["es"])}
+            return dict(snap)
+
+    def _resume_es(self, dim: int):
+        """The carried CMA to continue, or None to build a fresh one. A state from a
+        different dimension (the shell's N changed between visits) is dropped, not reshaped."""
+        state = self._resume_state
+        if state.get("kind") != "nd":
+            print(f"  [resume] shell {self._active_shell}: ignoring {state.get('kind')!r} state in the N-D path")
+            return None
+        if int(state["dim"]) != dim:
+            print(f"  [resume] shell {self._active_shell}: dim {state['dim']} != {dim}, starting fresh")
+            return None
+        return state["es"]
+
     def update_root_exponent(self, new_exp: Exponent_Set) -> None:
         with self._lock:
             self._pending_root_exp = new_exp
@@ -226,6 +261,14 @@ class Shell_Optimization:
 
                 mean_1d              = float(x0[0])
                 sigma_1d             = max(1.0, float(self._sigma))
+                if self._resume_state is not None:
+                    if self._resume_state.get("kind") == "1d":
+                        mean_1d  = float(self._resume_state["mean"])
+                        sigma_1d = float(self._resume_state["sigma"])
+                        p_sigma  = float(self._resume_state["p_sigma"])
+                    else:
+                        print(f"  [resume] shell {self._active_shell}: ignoring "
+                              f"{self._resume_state.get('kind')!r} state in the 1-D path")
                 best_energy_overall  = self._start_energy
                 best_exp_overall     = self._start_exp.copy(no_energy=True)
                 root_exp             = self._start_exp.copy(no_energy=True)
@@ -291,8 +334,10 @@ class Shell_Optimization:
                         self._best_exp       = best_exp_overall
                         self._best_energy    = best_energy_overall
                         self._generation     = gen
-                        self._sigma_snapshot = sigma_1d
-                        self._mean_snapshot  = array([mean_1d])
+                        self._sigma_snapshot  = sigma_1d
+                        self._mean_snapshot   = array([mean_1d])
+                        self._resume_snapshot = {"kind": "1d", "mean": mean_1d,
+                                                 "sigma": sigma_1d, "p_sigma": p_sigma}
                         self._history.append({
                             "gen":                 gen,
                             "mean":                array([mean_1d]),
@@ -315,12 +360,16 @@ class Shell_Optimization:
                 return
 
             # ── N-D: CMA-ES ──────────────────────────────────────────────────────
-            cma_opts = {'popsize': self._generation_size}
-            if self._seed is not None:
-                cma_opts['seed'] = self._seed
-            es = cma.CMAEvolutionStrategy(x0, self._sigma, cma_opts)
+            es = self._resume_es(len(x0)) if self._resume_state is not None else None
+            resumed = es is not None
 
-            if self._cma_state is not None:
+            if es is None:
+                cma_opts = {'popsize': self._generation_size}
+                if self._seed is not None:
+                    cma_opts['seed'] = self._seed
+                es = cma.CMAEvolutionStrategy(x0, self._sigma, cma_opts)
+
+            if not resumed and self._cma_state is not None:
                 es.mean  = self._cma_state[0]
                 Cnew     = self._cma_state[2]
                 Cnew     = 0.5 * (Cnew + Cnew.T)
@@ -396,8 +445,9 @@ class Shell_Optimization:
                     self._best_exp       = best_exp_overall
                     self._best_energy    = best_energy_overall
                     self._generation     = gen
-                    self._sigma_snapshot = es.sigma
-                    self._mean_snapshot  = es.mean.copy()
+                    self._sigma_snapshot  = es.sigma
+                    self._mean_snapshot   = es.mean.copy()
+                    self._resume_snapshot = {"kind": "nd", "dim": len(x0), "es": es}
                     self._history.append({
                         "gen":                 gen,
                         "mean":                es.mean.copy(),

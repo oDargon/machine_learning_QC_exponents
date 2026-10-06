@@ -4,17 +4,44 @@ from matplotlib.widgets import Button
 from pathlib import Path
 
 HERE     = Path(__file__).resolve().parent
-DATA_DIR = HERE / "2d_surface_data" / "Li_p3"
+DATA_DIR = HERE / "cbs_data" / "Li"
+
+# override: restrict both figures to a sub-window of the scanned grid, (lo, hi) per
+# axis, None for the whole scanned range. Points outside are dropped at load, so the
+# minimum star and the min-vs-N curve are recomputed from what survives.
+A0_RANGE = None       # e.g. (3.0, 6.0)
+A1_RANGE = None       # e.g. (-10.0, -6.0)
+
+A0_RANGE = (2.7,6)
+A1_RANGE = (-10,-3)
+
+_a0_note    = "full" if A0_RANGE is None else f"[{A0_RANGE[0]:g}, {A0_RANGE[1]:g}]"
+_a1_note    = "full" if A1_RANGE is None else f"[{A1_RANGE[0]:g}, {A1_RANGE[1]:g}]"
+WINDOW_NOTE = "" if (A0_RANGE is None and A1_RANGE is None) else f"   a0 {_a0_note}  a1 {_a1_note}"
+
+
+def crop(a0s, a1s, Z):
+    """Z is indexed [a1, a0] — it was built from meshgrid(a0s, a1s) — so a1 masks rows."""
+    m0 = np.ones(len(a0s), dtype=bool) if A0_RANGE is None else (a0s >= A0_RANGE[0]) & (a0s <= A0_RANGE[1])
+    m1 = np.ones(len(a1s), dtype=bool) if A1_RANGE is None else (a1s >= A1_RANGE[0]) & (a1s <= A1_RANGE[1])
+    return a0s[m0], a1s[m1], Z[np.ix_(m1, m0)]
 
 
 def load_all(data_dir):
     """Load every .npz surface, sorted by shell (L) then N: all s by N, then p, then d ..."""
     datasets = []
     for p in sorted(data_dir.glob("*.npz")):
-        d = np.load(p)
+        d           = np.load(p)
+        a0s, a1s, Z = crop(d["a0s"], d["a1s"], d["Z"])
+
+        if a0s.size == 0 or a1s.size == 0:
+            raise SystemExit(f"{p.name}: no grid points inside A0_RANGE={A0_RANGE}, A1_RANGE={A1_RANGE}")
+
+        flat = int(np.nanargmin(Z))
         datasets.append({
-            "a0s": d["a0s"], "a1s": d["a1s"], "Z": d["Z"],
-            "center": d["center"], "grid_min": d["grid_min"],
+            "a0s": a0s, "a1s": a1s, "Z": Z,
+            "center": d["center"],
+            "grid_min": np.array([a0s[flat % len(a0s)], a1s[flat // len(a0s)]]),
             "shell": int(d["shell"]), "l": str(d["l"]), "N": int(d["N"]),
         })
     datasets.sort(key=lambda r: (r["shell"], r["N"]))
@@ -52,7 +79,7 @@ def draw():
 
     ax.set_xlabel("a0  (log-scale param)")
     ax.set_ylabel("a1  (range param)")
-    ax.set_title(f"[{state['idx'] + 1}/{len(datasets)}]   Shell {d['shell']} ({d['l']})   N={d['N']}")
+    ax.set_title(f"[{state['idx'] + 1}/{len(datasets)}]   Shell {d['shell']} ({d['l']})   N={d['N']}{WINDOW_NOTE}")
     ax.legend(loc="upper right", fontsize=9, framealpha=0.9)
     fig.canvas.draw_idle()
 
