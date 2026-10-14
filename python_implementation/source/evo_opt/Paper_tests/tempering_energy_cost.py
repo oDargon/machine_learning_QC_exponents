@@ -203,26 +203,46 @@ for shell in SHELLS:
              f"dE {e_all[p].min() - e_start:+.3e}   {int(g_all[p].mean())} gens avg"
              + ("   [HIT CAP]" if cap_all[p] else ""))
 
-    # reference = the lowest energy anything reached for this shell. All runs share one
-    # objective, so this is a like-for-like comparison with no re-scoring.
-    e_ref = float(e_all.min())
+    # Reference is the best MEAN over seeds, not the best single run. best-of-N is a biased
+    # statistic — E[min of N] falls as scatter grows — and the scatter here varies by orders
+    # of magnitude across parametrizations, so comparing bests hands the noisiest arm a
+    # better-looking number for free and can invert the ordering outright. The nested
+    # polynomial manifolds (M spans a subset of M+1) make the TRUE curve monotone
+    # non-increasing in M, so a rise is either noise or a measurement artefact.
+    means = array([e_all[p].mean() for p in range(len(plan))], dtype=float64)
+    sems  = array([e_all[p].std() / max(len(SEEDS) - 1, 1) ** 0.5 for p in range(len(plan))],
+                  dtype=float64)
+    e_ref = float(means.min())
 
     emit("")
-    emit(f"  --- tempering loss, shell {shell} ({lbl}), reference = best over all runs "
+    emit(f"  --- tempering loss, shell {shell} ({lbl}), reference = best MEAN over seeds "
          f"({e_ref:.10f} Eh) ---")
-    emit(f"  {'parametrization':<16}{'params':>7}{'E_best':>18}{'loss (Eh)':>13}{'loss / chem acc':>17}")
+    emit(f"  {'parametrization':<14}{'params':>7}{'E_mean':>17}{'loss (uEh)':>12}"
+         f"{'+/- sem':>10}{'loss/chem':>11}{'resolvable':>12}{'E_best':>17}")
     for p in range(len(plan)):
         n_params, label, use_temp, _ = plan[p]
-        loss = float(e_all[p].min()) - e_ref
-        emit(f"  {label:<16}{n_params:>7}{e_all[p].min():>18.10f}{loss:>13.3e}"
-             f"{loss / CHEMICAL_ACCURACY:>17.4f}")
+        loss      = float(means[p]) - e_ref
+        resolved  = "yes" if loss > 2.0 * float(sems[p]) else "no"
+        emit(f"  {label:<14}{n_params:>7}{means[p]:>17.10f}{loss * 1e6:>12.3f}"
+             f"{sems[p] * 1e6:>10.3f}{loss / CHEMICAL_ACCURACY:>11.5f}{resolved:>12}"
+             f"{e_all[p].min():>17.10f}")
 
         sum_w.writerow([shell, lbl, n_exp, n_params, label, len(SEEDS),
-                        f"{e_all[p].mean():.10f}", f"{e_all[p].std():.10e}",
+                        f"{means[p]:.10f}", f"{e_all[p].std():.10e}",
                         f"{e_all[p].min():.10f}", f"{loss:.10e}",
                         f"{loss / CHEMICAL_ACCURACY:.6f}",
                         f"{g_all[p].mean():.1f}", int(j_all[p]), int(cap_all[p])])
     sum_f.flush()
+
+    # a rise in the mean as M grows cannot be real — flag any that exceeds the noise
+    for p in range(1, len(plan)):
+        if not plan[p][2] or not plan[p - 1][2]:
+            continue                                  # skip the untempered row
+        rise = float(means[p]) - float(means[p - 1])
+        if rise > 2.0 * (float(sems[p]) ** 2 + float(sems[p - 1]) ** 2) ** 0.5:
+            emit(f"  [WARNING] {plan[p][1]} is {rise * 1e6:.3f} uEh WORSE than {plan[p-1][1]} by more "
+                 f"than the combined noise. Nested manifolds forbid that, so suspect the")
+            emit(f"            search, not the parametrization (check gens and hit_gen_cap).")
 
     seed_std = float(e_all.std(axis=1).mean())
     emit("")

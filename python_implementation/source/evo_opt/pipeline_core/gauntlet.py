@@ -27,6 +27,9 @@ class Gauntlet_Config:
     subtract_start: bool = False     # also emit a delta matrix: each cell minus the reference basis on the same input
     start_name:     str  = "start"   # reference basis for the delta (expects <start_name>.expo among the bases)
 
+    # True : <CONTRACTION> if non-trivial, else <RES_CONTRACTION>, else uncontracted. False: all uncontracted.
+    use_contraction: bool = False
+
 
 def run_gauntlet(cfg: Gauntlet_Config) -> Path:
     SUBMIT_DIR = Path(cfg.submit_dir).resolve()
@@ -81,6 +84,24 @@ def run_gauntlet(cfg: Gauntlet_Config) -> Path:
     n_inp  = len(input_files)
     print(f"gauntlet: {n_expo} basis set(s) x {n_inp} input(s) = {n_expo * n_inp} jobs, "
           f"up to {cfg.total_cores} concurrent")
+
+    # optimizer best.expo is saved uncontracted with its final GENANO contraction only in
+    # <RES_CONTRACTION>, hence the fallback when <CONTRACTION> is absent/identity
+    print(f"contraction: {'ON' if cfg.use_contraction else 'OFF (all bases uncontracted)'}")
+    name_w = max(len(n) for n in expo_names)
+    for i in range(n_expo):
+        if not cfg.use_contraction:
+            expos[i].uncontract_all()
+            continue
+        if any(not expos[i]._is_identity(c) for c in expos[i].contractions):
+            source = "<CONTRACTION>"
+        elif expos[i].resulting_contraction is not None:
+            expos[i].change_contraction(expos[i].resulting_contraction)
+            source = "<RES_CONTRACTION>"
+        else:
+            source = "none found -> uncontracted"
+        print(f"  {expo_names[i]:<{name_w}}  {source:<26}  "
+              f"primitives {expos[i].lengths} -> functions {expos[i].n_contracted}")
 
     job_cfg = Job_Manager_Config(
         executor_type      = Executor_Type.LOCAL_BASH,

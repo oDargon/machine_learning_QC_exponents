@@ -56,8 +56,14 @@ CROSS_SHELL_WARMUP_GENS  = 20    # coupled arm only; must be >= GLOBAL_EVAL_WARM
 # OPT_MAX_GENS equalises GENERATIONS, not jobs — the schedulers spend different numbers of
 # full evals, so compare on jobs using the traces rather than trusting the gen budget.
 CYCLIC_CYCLES         = 5
-CYCLIC_GENS_PER_VISIT = 30       # 5 * 30 = 150 = OPT_MAX_GENS
-CYCLIC_WARM_RESTART   = True
+CYCLIC_GENS_PER_VISIT = 30       # 5 * 30 = 150 = OPT_MAX_GENS. This is a CAP: a visit ends
+                                 # on it or on CYCLIC_USE_STOPPING, whichever comes first.
+CYCLIC_USE_STOPPING   = True     # commit early once that visit's last 5 gen bests agree
+CYCLIC_STOP_TOL       = 1e-6
+CYCLIC_WARM_RESTART   = False    # cold is the measured-better choice: a warm-restarted CMA
+                                 # inherits a converged sigma, which either collapses further
+                                 # (the last-5 test then fires at gen 5 and later cycles become
+                                 # no-ops) or inflates while chasing the moving backdrop.
 CYCLIC_SHELL_ORDER    = None     # None -> ascending l
 
 EARLY_STOP        = False        # off: an early stop fires at different points per arm and
@@ -111,6 +117,8 @@ ARM_SPEC = {
     "cyclic":    dict(mode="cyclic", enable_cross_shell=False,
                       cyclic_cycles=CYCLIC_CYCLES,
                       cyclic_gens_per_visit=CYCLIC_GENS_PER_VISIT,
+                      cyclic_use_stopping=CYCLIC_USE_STOPPING,
+                      cyclic_stop_tol=CYCLIC_STOP_TOL,
                       cyclic_warm_restart=CYCLIC_WARM_RESTART,
                       cyclic_shell_order=CYCLIC_SHELL_ORDER),
 }
@@ -152,8 +160,19 @@ emit(f"contraction     : OFF for every arm (all jobs through {TEMPLATE_FULL})")
 emit(f"parametrization : {'tempering M=' + str(N_TEMPERING_PARAMS) if USE_TEMPERING else 'raw log-exponents'}")
 emit(f"seed            : {SEED} (shared by all arms)")
 emit(f"gens per shell  : joint {OPT_MAX_GENS} (ceiling x{GEN_CEILING_MULTIPLIER})   "
-     f"cyclic {CYCLIC_CYCLES} x {CYCLIC_GENS_PER_VISIT} = {CYCLIC_CYCLES * CYCLIC_GENS_PER_VISIT}")
+     f"cyclic {CYCLIC_CYCLES} x {CYCLIC_GENS_PER_VISIT} = {CYCLIC_CYCLES * CYCLIC_GENS_PER_VISIT} (max)")
+emit(f"cyclic restart  : {'WARM (CMA continued across visits)' if CYCLIC_WARM_RESTART else 'cold (fresh CMA each visit)'}")
+emit(f"cyclic stopping : {('on, stop_tol ' + format(CYCLIC_STOP_TOL, '.1e')) if CYCLIC_USE_STOPPING else 'off (every visit runs the full cap)'}")
+emit(f"cyclic order    : {CYCLIC_SHELL_ORDER if CYCLIC_SHELL_ORDER else 'ascending l'}")
 emit(f"early stop      : {'on' if EARLY_STOP else 'off (arms must end at comparable places)'}")
+if CYCLIC_WARM_RESTART and CYCLIC_USE_STOPPING:
+    emit("  [WARNING] warm restart + per-visit stopping: a resumed CMA carries a converged")
+    emit("            sigma, so the last-5 test fires at generation 5 on every revisit and")
+    emit("            later cycles become no-ops. Check gens per cycle in cyclic_trace.csv.")
+if EARLY_STOP:
+    emit("  [WARNING] early stop is on, so each arm ends when ITS OWN criterion fires. The")
+    emit("            wall clocks are then 'time until that arm stopped', not 'time to the")
+    emit("            same answer' — use <arm>/global_trace.csv for jobs-to-target instead.")
 emit("")
 
 SUMMARY_HEADER = ["arm", "mode", "cross_shell", "E0", "E_best", "dE",
@@ -162,7 +181,16 @@ sum_f = open(RESULTS_DIR / "schedulers.csv", "w", newline="")
 sum_w = csv.writer(sum_f)
 sum_w.writerow([f"#META atom={probe_basis.atom_name} arms={ARMS} seed={SEED} "
                 f"use_contraction=False tempering={USE_TEMPERING} M={N_TEMPERING_PARAMS} "
-                f"opt_max_gens={OPT_MAX_GENS} cyclic={CYCLIC_CYCLES}x{CYCLIC_GENS_PER_VISIT} "
+                f"popsize={OPT_GEN_SIZE} sigma={OPT_SIGMA} "
+                f"opt_max_gens={OPT_MAX_GENS} gen_ceiling_x={GEN_CEILING_MULTIPLIER} "
+                f"cyclic={CYCLIC_CYCLES}x{CYCLIC_GENS_PER_VISIT} "
+                f"cyclic_warm_restart={CYCLIC_WARM_RESTART} "
+                f"cyclic_use_stopping={CYCLIC_USE_STOPPING} cyclic_stop_tol={CYCLIC_STOP_TOL:.1e} "
+                f"cyclic_order={CYCLIC_SHELL_ORDER} "
+                f"early_stop={EARLY_STOP} early_stop_window={EARLY_STOP_WINDOW} "
+                f"early_stop_tol={EARLY_STOP_TOL:.1e} "
+                f"cross_shell_warmup={CROSS_SHELL_WARMUP_GENS} "
+                f"global_warmup={GLOBAL_EVAL_WARMUP_GENS} global_spacing={GLOBAL_EVAL_SPACING_GENS} "
                 f"chem_acc={CHEMICAL_ACCURACY:.6e}"])
 sum_w.writerow(SUMMARY_HEADER)
 sum_f.flush()

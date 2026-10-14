@@ -28,19 +28,25 @@ TOTAL_CORES = 6          # max MOLCAS jobs run concurrently (1 core per job assu
 SUBTRACT_START = False
 START_NAME     = "start"
 
+# True : each basis runs with <CONTRACTION> if its .expo has a non-trivial one, else
+#        <RES_CONTRACTION> (what the optimizer's best.expo carries), else uncontracted.
+# False: every basis runs fully uncontracted.
+USE_CONTRACTION = False
+
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
 cfg = Gauntlet_Config(
-    submit_dir     = _args.submit_dir,
-    work_dir       = _args.work_dir,
-    expo_dir       = EXPO_DIR,
-    input_dir      = INPUT_DIR,
-    run_script     = RUN_SCRIPT,
-    extract_script = EXTRACT_SCRIPT,
-    total_cores    = TOTAL_CORES,
-    expo_glob      = EXPO_GLOB,
-    input_glob     = INPUT_GLOB,
-    subtract_start = SUBTRACT_START,
-    start_name     = START_NAME,
+    submit_dir      = _args.submit_dir,
+    work_dir        = _args.work_dir,
+    expo_dir        = EXPO_DIR,
+    input_dir       = INPUT_DIR,
+    run_script      = RUN_SCRIPT,
+    extract_script  = EXTRACT_SCRIPT,
+    total_cores     = TOTAL_CORES,
+    expo_glob       = EXPO_GLOB,
+    input_glob      = INPUT_GLOB,
+    subtract_start  = SUBTRACT_START,
+    start_name      = START_NAME,
+    use_contraction = USE_CONTRACTION,
 )
 run_gauntlet(cfg)
