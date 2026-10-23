@@ -347,6 +347,10 @@ def run_joint(cfg, basis, base, contract_frozen, objective, full_objective,
     global_energies: list[float] = []
     early_stop_flag = {"stop": False}
 
+    # newest eval_idx whose snapshot was pushed as the shells' root (guarded by push_lock)
+    push_lock  = Lock()
+    push_state = {"last": -1}
+
     csv_f = open(results_dir / "global_trace.csv", "w", newline="")
     log_f = open(results_dir / "global.log", "w")
     csv_w = csv.writer(csv_f)
@@ -421,17 +425,44 @@ def run_joint(cfg, basis, base, contract_frozen, objective, full_objective,
                     log_f.write(msg + "\n")
                     log_f.flush()
 
-        # cross-shell coupling: feed the converged contraction back to every shell
-        # optimizer as a new root
+        # cross-shell coupling: feed the combined basis back to every shell optimizer as a
+        # new root. With contraction off only the exponents propagate, so the coupling must
+        # not hinge on a GENANO contraction (a template without GENANO would silently never
+        # couple). A failed eval (1e6 sentinel) is not pushed, or every shell would fail with it.
         if (
             cfg.enable_cross_shell
-            and results[0].resulting_contraction is not None
+            and energy < 1e6
             and all(optimizers[idx].generation >= cfg.cross_shell_warmup_gens - 1 for idx in optimizers)
         ):
+            skip_msg   = None
             shared_exp = results[0].copy(no_energy=True)
-            shared_exp.change_contraction(results[0].resulting_contraction)
-            for idx in optimizers:
-                optimizers[idx].update_root_exponent(shared_exp)
+            if not contract_frozen:
+                shared_exp.uncontract_all()
+            elif results[0].resulting_contraction is not None:
+                shared_exp.change_contraction(results[0].resulting_contraction)
+            else:
+                shared_exp = None
+                skip_msg   = f"[CrossShell] global eval {eval_idx} returned no contraction; coupling skipped."
+
+            # overlapping evals can finish out of order; an older snapshot landing after a
+            # newer one would roll the shells' backdrop back, so it is discarded. The push sits
+            # inside the lock with the check, otherwise an older push could still land last.
+            if shared_exp is not None:
+                with push_lock:
+                    newest = push_state["last"]
+                    if eval_idx > newest:
+                        push_state["last"] = eval_idx
+                        for idx in optimizers:
+                            optimizers[idx].update_root_exponent(shared_exp)
+                    else:
+                        skip_msg = (f"[CrossShell] global eval {eval_idx} finished after newer eval "
+                                    f"{newest}; its root is discarded.")
+
+            if skip_msg is not None:
+                print(skip_msg)
+                with best_lock:
+                    log_f.write(skip_msg + "\n")
+                    log_f.flush()
 
     # ─── poll and trigger loop ────────────────────────────────────────────────
 

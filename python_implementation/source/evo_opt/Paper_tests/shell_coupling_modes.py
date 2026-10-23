@@ -127,14 +127,11 @@ for a in range(len(ARMS)):
     if ARMS[a] not in ARM_SPEC:
         raise SystemExit(f"unknown arm {ARMS[a]!r}; known arms are {sorted(ARM_SPEC)}")
 
-# ─── does the coupled arm have anything to couple? ────────────────────────────
-# Cross-shell coupling only fires when the global eval returns a contraction, because it
-# propagates the shared basis via change_contraction. With contraction off the contraction
-# itself is stripped by the shells, but the EXPONENTS still propagate — which is the point.
-# If template_full produces no contraction the coupling silently never fires and the
-# coupled arm becomes identical to the uncoupled one, so check once up front.
+# ─── starting energy ──────────────────────────────────────────────────────────
+# With contraction off, coupling propagates the combined EXPONENTS only, so it fires
+# whether or not template_full runs GENANO.
 
-emit("=== precheck: will cross-shell coupling fire? ===")
+emit("=== precheck: starting energy ===")
 probe_dir = BASE_WORK / "precheck"
 probe_dir.mkdir(parents=True, exist_ok=True)
 for n in (EXPO_FILE, TEMPLATE_FULL, RUN_SCRIPT, EXTRACT_SCRIPT):
@@ -144,13 +141,6 @@ probe_basis = Exponent_Set.from_file(probe_dir / EXPO_FILE)
 probe_basis.uncontract_all()
 probe = evaluate_initial(probe_basis, Ground_Energy_Objective(probe_dir / TEMPLATE_FULL, probe_cfg),
                          probe_dir, threads=1, subdir_name="probe", contract_frozen_shells=False)
-if probe.resulting_contraction is None:
-    emit("  [WARNING] the fully-uncontracted template returns NO contraction, so cross-shell")
-    emit("            coupling can never fire and the 'coupled' arm will be identical to")
-    emit("            'uncoupled'. Fix the template or drop the coupled arm.")
-else:
-    emit(f"  ok: template returns a contraction, coupling can fire after "
-         f"{CROSS_SHELL_WARMUP_GENS} gens")
 emit(f"  E (fully uncontracted start): {float(probe.energy):.10f} Eh")
 emit("")
 
@@ -271,7 +261,7 @@ if "uncoupled" in results and "coupled" in results:
         emit("")
         emit("  [WARNING] 'coupled' and 'uncoupled' reached bit-identical energies. Coupling")
         emit("            probably never fired — check CROSS_SHELL_WARMUP_GENS against the")
-        emit("            generations actually reached, and the precheck above.")
+        emit("            generations actually reached.")
 
 sum_f.close()
 emit("")

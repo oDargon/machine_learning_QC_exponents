@@ -88,7 +88,8 @@ class Job_Manager:
         self.overwrite_existing: bool     = overwrite_existing
         self.executor_type: Executor_Type = executor_type
         self.batched_execution: bool      = executor_type in BATCHED_EXECUTORS
-        self.global_poll_interval: float  = custom_poll_interval if custom_poll_interval is not None else 5.0
+        # a local poll is a cheap waitpid, so poll fast; remote/SLURM polls are real calls
+        self.global_poll_interval: float  = custom_poll_interval if custom_poll_interval is not None else (0.1 if executor_type == Executor_Type.LOCAL_BASH else 5.0)
         self.all_jobs_ran: bool           = False
 
         self.over_ssh               = over_ssh

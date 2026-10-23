@@ -1,7 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 from threading import Thread, Lock, Event
-from numpy import exp, log, float64, ndarray, array
+from numpy import exp, log, float64, ndarray, array, array_equal, inf
 from numpy.linalg import eigvalsh
 from numpy.random import default_rng
 from .exponent_handler import Exponent_Set
@@ -212,6 +212,18 @@ class Shell_Optimization:
         with self._lock:
             self._pending_root_exp = new_exp
 
+    def _same_backdrop(self, a: Exponent_Set, b: Exponent_Set) -> bool:
+        if len(a.exponents) != len(b.exponents):
+            return False
+        for l in range(len(a.exponents)):
+            if l == self._active_shell:
+                continue
+            if not array_equal(a.exponents[l], b.exponents[l]):
+                return False
+            if self._contract_frozen_shells and not array_equal(a.contractions[l], b.contractions[l]):
+                return False
+        return True
+
     def _worker(self, threads: int) -> None:
         logger = None
         try:
@@ -290,6 +302,10 @@ class Shell_Optimization:
                         pending_root           = self._pending_root_exp
                         self._pending_root_exp = None
                     if pending_root is not None:
+                        # a best scored on the old backdrop is not comparable to energies on the
+                        # new one, so the next generation's best becomes the new baseline
+                        if not self._same_backdrop(root_exp, pending_root):
+                            best_energy_overall = inf
                         root_exp = pending_root.copy(no_energy=True)
 
                     z           = rng.standard_normal(self._generation_size)
@@ -399,6 +415,10 @@ class Shell_Optimization:
                     pending_root           = self._pending_root_exp
                     self._pending_root_exp = None
                 if pending_root is not None:
+                    # a best scored on the old backdrop is not comparable to energies on the
+                    # new one, so the next generation's best becomes the new baseline
+                    if not self._same_backdrop(root_exp, pending_root):
+                        best_energy_overall = inf
                     root_exp = pending_root.copy(no_energy=True)
 
                 population  = es.ask()
