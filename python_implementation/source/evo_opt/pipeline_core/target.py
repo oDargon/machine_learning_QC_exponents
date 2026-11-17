@@ -58,9 +58,14 @@ def read_results(path):
             if not c0.lstrip("-").isdigit():
                 continue                                     # header / blank / other comment
             s = int(r[0]); n = int(r[2]); e = float(r[3]); a0 = float(r[4]); a1 = float(r[5])
-            shells.setdefault(s, {"l": r[1], "pts": []})["pts"].append((n, e, a0, a1))
+            entry = shells.setdefault(s, {"l": r[1], "pts": [], "failed": []})
+            if e >= 1e6:                                     # failure sentinel: no energy, keep it out of the fit
+                entry["failed"].append(n)
+                continue
+            entry["pts"].append((n, e, a0, a1))
     for s in shells:
         shells[s]["pts"].sort()
+        shells[s]["failed"].sort()
     return shells, meta
 
 
@@ -132,6 +137,8 @@ def run_target(cfg: Target_Config) -> Path | None:
         dE  = cfg.shell_tolerances.get(s, cfg.default_tolerance)
 
         out("")
+        if shells[s]["failed"]:
+            out(f"shell {s} ({lbl}): dropped failed point(s) N={shells[s]['failed']} (1e6 sentinel)")
         if len(ns) < cfg.cbs_min_points:
             out(f"shell {s} ({lbl}): only {len(ns)} point(s) — need >= {cfg.cbs_min_points} to fit, skipping")
             incomplete = True

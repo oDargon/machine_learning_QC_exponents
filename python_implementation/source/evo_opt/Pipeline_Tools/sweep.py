@@ -41,31 +41,35 @@ N_FIT_POINTS      = 4         # optima nearest the query used for the local extr
 # CMA-ES seed handed to every CMA run unchanged. int -> all runs use it; None -> random.
 SEED = None
 
+# more than this many 1e6-sentinel failures in a row ends that shell's sweep
+MAX_CONSECUTIVE_FAILS = 3
+
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
 cfg = Sweep_Config(
-    submit_dir        = _args.submit_dir,
-    work_dir          = _args.work_dir,
-    expo_file         = EXPO_FILE,
-    template_cont     = TEMPLATE_CONT,
-    template_full     = TEMPLATE_FULL,
-    run_script        = RUN_SCRIPT,
-    extract_script    = EXTRACT_SCRIPT,
-    shells            = SHELLS,
-    n_increases       = N_INCREASES,
-    n_step            = N_STEP,
-    use_contraction   = USE_CONTRACTION,
-    m_params          = M_PARAMS,
-    generator         = GENERATOR,
-    sigma             = SIGMA,
-    generation_size   = GENERATION_SIZE,
-    max_generations   = MAX_GENERATIONS,
-    use_stopping      = USE_STOPPING,
-    stop_tol          = STOP_TOL,
-    total_threads     = TOTAL_THREADS,
-    threads_per_shell = THREADS_PER_SHELL,
-    use_extrapolation = USE_EXTRAPOLATION,
-    n_fit_points      = N_FIT_POINTS,
-    seed              = SEED,
+    submit_dir            = _args.submit_dir,
+    work_dir              = _args.work_dir,
+    expo_file             = EXPO_FILE,
+    template_cont         = TEMPLATE_CONT,
+    template_full         = TEMPLATE_FULL,
+    run_script            = RUN_SCRIPT,
+    extract_script        = EXTRACT_SCRIPT,
+    shells                = SHELLS,
+    n_increases           = N_INCREASES,
+    n_step                = N_STEP,
+    use_contraction       = USE_CONTRACTION,
+    m_params              = M_PARAMS,
+    generator             = GENERATOR,
+    sigma                 = SIGMA,
+    generation_size       = GENERATION_SIZE,
+    max_generations       = MAX_GENERATIONS,
+    use_stopping          = USE_STOPPING,
+    stop_tol              = STOP_TOL,
+    total_threads         = TOTAL_THREADS,
+    threads_per_shell     = THREADS_PER_SHELL,
+    use_extrapolation     = USE_EXTRAPOLATION,
+    n_fit_points          = N_FIT_POINTS,
+    seed                  = SEED,
+    max_consecutive_fails = MAX_CONSECUTIVE_FAILS,
 )
 run_sweep(cfg)

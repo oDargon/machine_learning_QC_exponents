@@ -102,3 +102,4 @@ python_implementation/Plotting
 python_implementation/source/evo_opt/Feature_Testing/data/*
 python_implementation/Source/evo_opt/Ploting/2d_surface_data/*
 F_contract_v_not_test
+python_implementation/source/evo_opt/Ploting/cbs_data/*

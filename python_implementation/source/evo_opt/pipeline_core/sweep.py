@@ -52,6 +52,10 @@ class Sweep_Config:
     # CMA-ES seed handed to every CMA run unchanged. int -> all runs use it; None -> random.
     seed: int | None = None
 
+    # a point whose best energy is the 1e6 failure sentinel is still written to the CSV but kept
+    # out of the start extrapolation; more than this many failures in a row ends that shell.
+    max_consecutive_fails: int = 3
+
 
 def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
     SUBMIT_DIR = Path(cfg.submit_dir).resolve()
@@ -94,7 +98,10 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
         base = boot.copy(no_energy=True)
         base.change_contraction(boot.resulting_contraction)
         e_initial = float(boot.energy)   # uncontracted energy of the input basis (for the pipeline report)
-        print(f"  bootstrap E (uncontracted): {boot.energy:.10f} Eh\n")
+        print(f"  bootstrap E (uncontracted): {boot.energy:.10f} Eh")
+        # the frozen backdrop every shell was swept against — inverse_target loads this
+        backdrop_path = base.save(RESULTS_DIR, f"{exp.atom_name}_backdrop_contracted.expo", overwrite=True)
+        print(f"  saved {backdrop_path}\n")
     else:
         base      = exp.copy(no_energy=True)
         e_initial = None   # no bootstrap eval when contraction is off
@@ -180,7 +187,8 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
         n_values = [n0 + i * cfg.n_step for i in range(cfg.n_increases + 1)]
         print(f"=== shell {shell} ({lbl}): N {n_values} ===", flush=True)
 
-        opt_hist = []   # (N, a0, a1) of converged optima for this shell
+        opt_hist = []   # (N, a0, a1) of converged optima for this shell (failed points excluded)
+        n_failed = 0    # consecutive failed points
         for N in n_values:
             codec = from_registry(cfg.generator, m=cfg.m_params, n=N)
 
@@ -219,6 +227,16 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
             print(f"  shell {shell} ({lbl}) N={N:3d} [{src:>6}]: E_cma={e_best:.10f} "
                   f"at ({best[0]:+.3f},{best[1]:+.3f})  ({gens} gens)", flush=True)
 
+            if e_best >= 1e6:
+                n_failed += 1
+                print(f"  [WARNING] shell {shell} ({lbl}) N={N}: failed (1e6 sentinel), "
+                      f"{n_failed} in a row — left out of the extrapolation", flush=True)
+                if n_failed > cfg.max_consecutive_fails:
+                    print(f"  [WARNING] shell {shell} ({lbl}): more than {cfg.max_consecutive_fails} "
+                          f"consecutive failures — ending this shell at N={N}", flush=True)
+                    break
+                continue
+            n_failed = 0
             opt_hist.append((N, float(best[0]), float(best[1])))
 
     threads = [Thread(target=shell_worker, args=(s,), daemon=True) for s in cfg.shells]
