@@ -24,7 +24,7 @@ USE_CONTRACTION = True
 
 M_PARAMS        = 2        # 2D tempering
 GENERATOR       = "polynomial"  # tempering generator (recorded in the CSV #META header)
-SIGMA           = 0.1      # CMA step-size (CMA adapts it internally from here)
+SIGMA           = 0.1      # CMA step-size; 0.01 stalls at the start on large N (see Sweep_Config.sigma)
 GENERATION_SIZE = 6        # CMA population per generation
 MAX_GENERATIONS = 100      # hard cap; the early-stop should end well before this
 USE_STOPPING    = True     # early stop once the last 5 generation bests agree to STOP_TOL
@@ -43,6 +43,17 @@ SEED = None
 
 # more than this many 1e6-sentinel failures in a row ends that shell's sweep
 MAX_CONSECUTIVE_FAILS = 3
+
+# a shell starting at N=1 is optimized as usual, but one exponent has no span, so the
+# next N starts from this guessed log-span ln(alpha_max / alpha_min), centred on that exponent
+N1_GUESS_SPAN = 3.0
+
+# optional safety for multi-ravine shells: on the first N (second if the shell starts at N=1),
+# step the most diffuse exponent tighter (spacing fixed) until the wall: the energy rising
+# strictly for WALL_CONFIRM exponent spacings. Then run a fresh CMA from the foot of the wall
+# and keep the lower of the two optima
+WALL_SEARCH  = False
+WALL_CONFIRM = 1.0
 
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
@@ -71,5 +82,8 @@ cfg = Sweep_Config(
     n_fit_points          = N_FIT_POINTS,
     seed                  = SEED,
     max_consecutive_fails = MAX_CONSECUTIVE_FAILS,
+    n1_guess_span         = N1_GUESS_SPAN,
+    wall_search           = WALL_SEARCH,
+    wall_confirm          = WALL_CONFIRM,
 )
 run_sweep(cfg)

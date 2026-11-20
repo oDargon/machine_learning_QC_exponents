@@ -39,7 +39,7 @@ class Optimize_Config:
     optimize_flags:    list = field(default_factory=lambda: [1, 1, 1, 1, 1, 1])  # 1 = optimize, 0 = freeze; may be shorter than n_shells
     generation_size:   list | int = field(default_factory=lambda: [6, 6, 6, 6, 6, 6])  # int, or one entry per optimize_flags entry
     threads_per_shell: list | int = field(default_factory=lambda: [6, 6, 6, 6, 6, 6])  # int, or one entry per optimize_flags entry
-    sigma:                  float = 0.1
+    sigma:                  float = 0.01
     max_generations:        int   = 300  # target: run until every shell has reached this many gens
     gen_ceiling_multiplier: int   = 5    # hard per-shell ceiling = max_generations * this; a fast shell
                                          #   may run ahead up to the ceiling while slower shells catch up

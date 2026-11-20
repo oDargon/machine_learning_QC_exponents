@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 from dataclasses import dataclass, field
 from threading import Thread, Semaphore, Lock
-from numpy import array, float64, savez
+from numpy import array, float64, savez, log, ceil
 
 from ..exponent_handler import Exponent_Set
 from ..objectives import Ground_Energy_Objective
@@ -34,7 +34,12 @@ class Sweep_Config:
 
     m_params:        int   = 2            # 2D tempering
     generator:       str   = "polynomial" # tempering generator (recorded in the CSV #META header)
-    sigma:           float = 0.1          # CMA step-size (CMA adapts it internally from here)
+    # CMA step-size (CMA adapts it internally from here). 0.1, not 0.01: a step of sigma in a1
+    # moves the spacing ln beta by only sigma/(N-1), so at 0.01 the energy change per step fell
+    # below stop_tol and CMA stopped after 5 generations at its start, 3-16 uEh above the true
+    # minimum (Li p/f, P g). Against 61x21 (ln alpha_min, ln beta) scans of Li, B and P
+    # (2026-11-20), 0.1 removed every such miss (worst +0.4 uEh) at no extra generations.
+    sigma:           float = 0.1
     generation_size: int   = 6            # CMA population per generation
     max_generations: int   = 100          # hard cap; the early-stop should end well before this
     use_stopping:    bool  = True         # early stop once the last 5 generation bests agree to stop_tol
@@ -55,6 +60,20 @@ class Sweep_Config:
     # a point whose best energy is the 1e6 failure sentinel is still written to the CSV but kept
     # out of the start extrapolation; more than this many failures in a row ends that shell.
     max_consecutive_fails: int = 3
+
+    # a shell at N=1 has no span (a1 is meaningless for one exponent), so the next N starts
+    # from this guessed log-span |a1| = ln(alpha_max / alpha_min), centred on the N=1 exponent.
+    n1_guess_span: float = 3.0
+
+    # optional safety for multi-ravine shells (e.g. CASPT2 intruder ravines in B p). On the first
+    # N (the second if the shell starts at N=1), after the normal CMA: step the most diffuse
+    # exponent tighter (spacing fixed) until the wall: the first point after which the energy rises
+    # strictly for wall_confirm exponent spacings (the ravine ripple has a period of one spacing,
+    # so a ridge comes back down within it; the wall keeps rising; failed points count as rises).
+    # Then run a fresh CMA from the foot of the wall and keep whichever optimum is lower.
+    # Later N inherit the result via the warm start.
+    wall_search:  bool  = False
+    wall_confirm: float = 1.0
 
 
 def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
@@ -157,6 +176,52 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
         shutil.rmtree(cma_dir,  ignore_errors=True)
         return e_best, best_params, gens, history, e_start
 
+    def wall_seek(shell, codec, N, params, e_ref, threads):
+        """Walk ln(alpha_min) tighter from params at fixed spacing (a0 += step, a1 fixed) in
+        batches of `threads` points, until the foot of the wall: the first probed point (the CMA
+        optimum included) after which the energy rises strictly for cfg.wall_confirm spacings.
+        Returns (params at the foot of the wall, report string)."""
+        step     = abs(float(params[1])) / (N - 1) / 4      # a quarter of the exponent spacing
+        max_k    = 40
+        m        = max(1, int(ceil(cfg.wall_confirm * 4)))  # spacings -> quarter-spacing steps
+        wall_dir = WORK_DIR / f"wall_s{shell}_N{N:02d}"
+        shifts   = [0.0]
+        energies = [float(e_ref)]
+        wall_k   = None
+        c        = 0                                         # next foot candidate to examine
+        while wall_k is None and len(shifts) - 1 < max_k + m:
+            batch_shifts = [step * (len(shifts) + i) for i in range(threads)]
+            batch        = []
+            for i in range(len(batch_shifts)):
+                work = base.copy(no_energy=True)
+                work.apply_params(shell, codec, array([float(params[0]) + batch_shifts[i], float(params[1])]), n=N)
+                if not cfg.use_contraction:
+                    work.uncontract_all()
+                batch.append(work)
+            res = energy_objective.evaluate_batch(batch, work_dir=wall_dir, threads=threads, overwrite=True)
+            for i in range(len(batch_shifts)):
+                shifts.append(batch_shifts[i])
+                energies.append(float(res[i].energy))
+            while wall_k is None and c <= max_k and c + m < len(shifts):
+                rising = True
+                for j in range(c + 1, c + m + 1):
+                    if not (energies[j] > energies[j - 1] or energies[j] >= 1e6):   # a failure counts as a rise
+                        rising = False
+                if rising:
+                    wall_k = c
+                c += 1
+        shutil.rmtree(wall_dir, ignore_errors=True)
+
+        if wall_k is None:
+            k_best = int(array(energies).argmin())
+            note   = f"no wall (rise sustained over {cfg.wall_confirm} spacing) within {max_k} steps; starting from the lowest probed point"
+        else:
+            k_best = wall_k
+            note   = (f"foot of the wall at ln(alpha_min) +{shifts[wall_k]:.3f} from the CMA optimum "
+                      f"({wall_k} steps, {(energies[wall_k] - e_ref) * 1e6:+.1f} uEh vs CMA)"
+                      + ("; the CMA optimum is already at the foot" if wall_k == 0 else ""))
+        return array([float(params[0]) + shifts[k_best], float(params[1])], dtype=float64), note
+
     # ─── parallel sweep: one thread per shell, gated by a core-budget semaphore ────
 
     n_slots   = max(1, cfg.total_threads // cfg.threads_per_shell)
@@ -169,7 +234,8 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
     # machine-readable provenance line, first row of every CSV. cbs_target reads it
     # so the atom / generator / M need not be restated by hand downstream.
     META = (f"#META atom={exp.atom_name} generator={cfg.generator} M={cfg.m_params} "
-            f"n_step={cfg.n_step} use_contraction={cfg.use_contraction}")
+            f"n_step={cfg.n_step} use_contraction={cfg.use_contraction} "
+            f"sigma={cfg.sigma}")
 
     # live CSV: flushed per point in completion order (crash-safe). The ordered CSV
     # (sorted by shell, N) is written from the collected rows once everything finishes.
@@ -186,22 +252,48 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
         n0       = len(base.exponents[shell])
         n_values = [n0 + i * cfg.n_step for i in range(cfg.n_increases + 1)]
         print(f"=== shell {shell} ({lbl}): N {n_values} ===", flush=True)
+        if n0 == 1 and len(n_values) > 1:
+            print(f"  [NOTE] shell {shell} ({lbl}) starts at N=1: it is optimized as usual, but one exponent "
+                  f"has no span, so N={n_values[1]} starts from a guessed span of {cfg.n1_guess_span} "
+                  f"(n1_guess_span), centred on the N=1 exponent", flush=True)
 
         opt_hist = []   # (N, a0, a1) of converged optima for this shell (failed points excluded)
         n_failed = 0    # consecutive failed points
+        wall_n   = n_values[1] if n0 == 1 and len(n_values) > 1 else n_values[0]
         for N in n_values:
             codec = from_registry(cfg.generator, m=cfg.m_params, n=N)
 
-            if cfg.use_extrapolation and len(opt_hist) >= 2:
+            usable = [p for p in opt_hist if p[0] >= 2]
+            if opt_hist and opt_hist[-1][0] == 1:
+                center, src = array([opt_hist[-1][1] + cfg.n1_guess_span / 2, -cfg.n1_guess_span], dtype=float64), "guess"
+            elif cfg.use_extrapolation and len(usable) >= 3:
                 center, src = _extrapolate_start(opt_hist, N, cfg.n_fit_points), "geom"
-            elif opt_hist:
-                center, src = array([opt_hist[-1][1], opt_hist[-1][2]], dtype=float64), "prev"
+            elif usable:
+                # same most diffuse exponent and neighbour ratio as the last optimum
+                center, src = _extrapolate_start([usable[-1]], N), "hold"
+            elif n0 == 1 and N > 1:
+                # the N=1 point failed: guess around the input basis' single exponent instead
+                ln_a        = float(log(base.exponents[shell][0]))
+                center, src = array([ln_a + cfg.n1_guess_span / 2, -cfg.n1_guess_span], dtype=float64), "guess"
             else:
                 center, src = array(codec.encode(base.exponents[shell]), dtype=float64), "encode"
 
             seed = cfg.seed   # every CMA gets the exact same seed (None -> CMA picks random)
             with _sem:   # hold a core slot only for the actual CMA run
                 e_best, best, gens, history, e_start = cma_converge(shell, codec, N, center, seed, cfg.threads_per_shell)
+
+            if cfg.wall_search and N == wall_n and N >= 2 and e_best < 1e6:
+                with _sem:
+                    w_start, note                 = wall_seek(shell, codec, N, best, e_best, cfg.threads_per_shell)
+                    e_w, best_w, gens_w, hist_w, _ = cma_converge(shell, codec, N, w_start, seed, cfg.threads_per_shell)
+                keep = e_w < e_best
+                print(f"  [WALL] shell {shell} ({lbl}) N={N}: {note}\n"
+                      f"         CMA from start {e_best:.10f} at ({best[0]:+.3f},{best[1]:+.3f}) | "
+                      f"CMA from wall {e_w:.10f} at ({best_w[0]:+.3f},{best_w[1]:+.3f})  "
+                      f"({(e_w - e_best) * 1e6:+.1f} uEh) -> keeping {'wall' if keep else 'start'}", flush=True)
+                if keep:
+                    e_best, best, gens, history = e_w, best_w, gens_w, hist_w
+                    center, src                 = w_start, "wall"
 
             row = [shell, lbl, N, f"{e_best:.10f}", f"{best[0]:.10e}", f"{best[1]:.10e}",
                    f"{center[0]:.10e}", f"{center[1]:.10e}", src, gens]

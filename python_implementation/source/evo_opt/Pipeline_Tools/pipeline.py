@@ -39,7 +39,7 @@ N_INCREASES       = 5        # per shell: this many points beyond N_start
 N_STEP            = 1        # gap between successive N points
 M_PARAMS          = 2        # tempering polynomial params (2 -> 2D tempering)
 GENERATOR         = "polynomial"
-SWEEP_SIGMA       = 0.1
+SWEEP_SIGMA       = 0.1      # 0.01 stalls at the start on large N (see Sweep_Config.sigma)
 SWEEP_GEN_SIZE    = 6
 SWEEP_MAX_GENS    = 100
 SWEEP_STOPPING    = True     # early stop once the last 5 generation bests agree to SWEEP_STOP_TOL
@@ -91,7 +91,7 @@ CYCLIC_SHELL_ORDER    = None   # visit order, e.g. [4, 3, 2, 1, 0]; None -> asce
 OPTIMIZE_FLAGS         = [1, 1, 1, 1, 1]  # 1 = optimize, 0 = freeze; may be shorter than n_shells
 OPT_GEN_SIZE           = [6, 6, 6, 6, 6]  # int, or one entry per OPTIMIZE_FLAGS entry
 OPT_THREADS_PER_SHELL  = [6, 6, 6, 6, 6]  # int, or one entry per OPTIMIZE_FLAGS entry
-OPT_SIGMA              = 0.1
+OPT_SIGMA              = 0.01
 OPT_MAX_GENS           = 300  # target: run until every shell reaches this many gens
 GEN_CEILING_MULTIPLIER = 5
 USE_TEMPERING          = True

@@ -48,20 +48,26 @@ def _geom_predict(ns, ys, n_new, k=4):
 
 
 def _extrapolate_start(opt_hist, n_new, n_fit_points=4):
-    # predict [a0, a1] for n_new in (a0, lnβ) space, where lnβ = a1/(N-1) is N-stable
-    # (it strips a1's mechanical N-growth), then reconstruct a1 = (N-1)·lnβ. N=1 optima
-    # are dropped from the trend: lnβ is a ratio between adjacent exponents, undefined for
-    # a single function (a1/0). With <2 usable points, just reuse the last optimum's params.
+    # predict [a0, a1] for n_new in (ln alpha_min, lnβ) space: the most diffuse exponent and the
+    # log neighbour ratio lnβ = |a1|/(N-1), both N-stable, so the extra functions extend the tight
+    # end. min(a0, a0+a1) handles the mirrored (a1 > 0) branch. N=1 optima are dropped (lnβ is
+    # undefined for one function). Fewer than 3 usable points: hold the last alpha_min and ratio
+    # — a 2-point line would turn a stalled CMA's artefact into a trend. Returns the a1 < 0 branch.
     usable = [p for p in opt_hist if p[0] >= 2]
-    if len(usable) < 2:
+    if not usable:
         last = opt_hist[-1]
         return array([last[1], last[2]], dtype=float64)
-    ns  = array([p[0]                for p in usable], dtype=float64)
-    a0  = array([p[1]                for p in usable], dtype=float64)
-    lnb = array([p[2] / (p[0] - 1.0) for p in usable], dtype=float64)
-    a0_pred  = _geom_predict(ns, a0,  n_new, k=n_fit_points)
-    lnb_pred = _geom_predict(ns, lnb, n_new, k=n_fit_points)
-    return array([a0_pred, lnb_pred * (n_new - 1.0)], dtype=float64)
+    ns   = array([p[0]                        for p in usable], dtype=float64)
+    amin = array([min(p[1], p[1] + p[2])      for p in usable], dtype=float64)
+    lnb  = array([abs(p[2]) / (p[0] - 1.0)    for p in usable], dtype=float64)
+    if len(usable) < 3:
+        amin_pred = float(amin[-1])
+        lnb_pred  = float(lnb[-1])
+    else:
+        amin_pred = _geom_predict(ns, amin, n_new, k=n_fit_points)
+        lnb_pred  = _geom_predict(ns, lnb,  n_new, k=n_fit_points)
+    a1 = -lnb_pred * (n_new - 1.0)
+    return array([amin_pred - a1, a1], dtype=float64)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -222,7 +228,7 @@ def run_cbs(
     early_stop:             bool       = False,  # cheap worst-case early stop after a step
     bad_ratio:              float      = 0.9,    # pessimistic per-unit-sqrt(N) decay ratio
     generator:              str        = "polynomial",
-    sigma:                  float      = 0.1,
+    sigma:                  float      = 0.01,
     generation_size:        int        = 6,
     max_generations:        int        = 100,
     total_threads:          int        = 1,

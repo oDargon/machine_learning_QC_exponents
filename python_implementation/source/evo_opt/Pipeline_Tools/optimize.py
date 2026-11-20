@@ -40,7 +40,7 @@ CYCLIC_SHELL_ORDER    = None   # visit order, e.g. [4, 3, 2, 1, 0]; None -> asce
 OPTIMIZE_FLAGS         = [1, 1, 1, 1, 1, 1]  # 1 = optimize, 0 = freeze; may be shorter than n_shells
 GENERATION_SIZE        = [6, 6, 6, 6, 6, 6]  # int, or one entry per OPTIMIZE_FLAGS entry
 THREADS_PER_SHELL      = [6, 6, 6, 6, 6, 6]  # int, or one entry per OPTIMIZE_FLAGS entry
-SIGMA                  = 0.1
+SIGMA                  = 0.01
 MAX_GENERATIONS        = 300  # target: run until every shell has reached this many gens
 GEN_CEILING_MULTIPLIER = 5    # hard per-shell ceiling = MAX_GENERATIONS * this; a fast shell
                               #   may run ahead up to the ceiling while slower shells catch up

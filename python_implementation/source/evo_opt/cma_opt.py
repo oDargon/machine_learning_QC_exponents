@@ -59,7 +59,7 @@ def evaluate_initial(
     return results[0]
 
 
-def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | None, objective: Objective, work_dir: Path | str, generation_size: int = 30, sigma: float = 0.1, max_generations: int = 50, threads: int = 1,
+def cma_fixed_exponent_count(start_exp: Exponent_Set, start_energy: float64 | None, objective: Objective, work_dir: Path | str, generation_size: int = 30, sigma: float = 0.01, max_generations: int = 50, threads: int = 1,
                               *, overwrite: bool = False, cma_state: list | None = None, logging: bool = False, use_stopping: bool = False, active_shells: list[int] | None = None, contract_frozen_shells: bool = False) -> tuple[Exponent_Set, float64, "cma.CMAEvolutionStrategy"]:
 
     # sig = inspect.signature(cma_fixed_exponent_count)
@@ -295,7 +295,7 @@ def cma_culling(
     propagate_covariance: bool      = False,
     propagation_mode: int           = 1,
     generation_size: int            = 12,
-    sigma: float                    = 0.1,
+    sigma: float                    = 0.01,
     max_generations: int            = 50,
     threads: int                    = 1,
     start_energy: float64 | None    = None,
