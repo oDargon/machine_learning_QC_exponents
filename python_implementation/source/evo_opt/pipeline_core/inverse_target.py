@@ -25,12 +25,7 @@ class Inverse_Target_Config:
     run_script:     str = "run.sh"
     extract_script: str = "extract.sh"
 
-    # False: A and the swapped-in shell are all uncontracted.
-    # True : A's other shells keep the contraction stored in the backdrop .expo (point
-    #        backdrop at the sweep's <atom>_backdrop_contracted.expo); the swapped shell is uncontracted.
-    use_contraction: bool = False
-
-    total_cores:    int = 1        # max MOLCAS jobs run concurrently
+    total_cores:   int = 1        # max MOLCAS jobs run concurrently
     cbs_min_points: int = 3        # smallest tail window used when gauging the E_inf band
 
 
@@ -56,6 +51,14 @@ def run_inverse_target(cfg: Inverse_Target_Config) -> Path:
     if not cfg.compare:
         raise SystemExit("inverse_target: no comparison bases given")
 
+    # the contraction setting is taken from the sweep: E_inf is only a fair reference if A's
+    # other shells are in the same state they were swept in. True: they keep the contraction
+    # stored in the backdrop (the sweep's <atom>_backdrop_contracted.expo). False: all uncontracted.
+    shells, meta = read_results(RESULTS_CSV)
+    if "use_contraction" not in meta:
+        raise SystemExit(f"{RESULTS_CSV} has no use_contraction in its #META header. Regenerate it with the current sweep script.")
+    USE_CONTRACTION = meta["use_contraction"] == "True"
+
     START_DIR  = WORK_DIR / "Start"
     STAGE_EXPO = START_DIR / "expos"
     STAGE_EXPO.mkdir(parents=True, exist_ok=True)
@@ -74,7 +77,7 @@ def run_inverse_target(cfg: Inverse_Target_Config) -> Path:
     extract_scr   = stage(SUBMIT_DIR / cfg.extract_script, START_DIR)
 
     base = Exponent_Set.from_file(stage(resolve(cfg.backdrop), STAGE_EXPO))
-    if not cfg.use_contraction:
+    if not USE_CONTRACTION:
         base.uncontract_all()
 
     cmp_exps  = []
@@ -100,15 +103,14 @@ def run_inverse_target(cfg: Inverse_Target_Config) -> Path:
     out("=" * 72)
     out("Inverse CBS report: per-shell distance of other bases to the sweep's E_inf")
     out(f"source:   {RESULTS_CSV}")
-    out(f"backdrop: {Path(cfg.backdrop).name}   contraction={'ON' if cfg.use_contraction else 'OFF'}   "
+    out(f"backdrop: {Path(cfg.backdrop).name}   contraction={'ON' if USE_CONTRACTION else 'OFF'} (from the sweep)   "
         f"primitives {base.lengths}")
     out(f"compare:  {', '.join(cmp_names)}")
     out("=" * 72)
 
     # ─── per-shell curve fits from the sweep ───────────────────────────────────
 
-    shells, _ = read_results(RESULTS_CSV)
-    fits      = {}   # shell -> dict
+    fits = {}   # shell -> dict
     for s in sorted(shells):
         pts = shells[s]["pts"]
         if shells[s]["failed"]:

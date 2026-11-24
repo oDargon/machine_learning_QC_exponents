@@ -22,7 +22,6 @@ N_INCREASES     = 5        # per shell: this many points beyond N_start
 N_STEP          = 1        # gap between successive N points (1 -> 17,18,19..; 2 -> 17,19,21..)
 USE_CONTRACTION = True
 
-M_PARAMS        = 2        # 2D tempering
 GENERATOR       = "polynomial"  # tempering generator (recorded in the CSV #META header)
 SIGMA           = 0.1      # CMA step-size; 0.01 stalls at the start on large N (see Sweep_Config.sigma)
 GENERATION_SIZE = 6        # CMA population per generation
@@ -55,6 +54,10 @@ N1_GUESS_SPAN = 3.0
 WALL_SEARCH  = False
 WALL_CONFIRM = 1.0
 
+# a point whose swept shell has an overlap min eigenvalue below this skips MOLCAS and is
+# recorded as 2e6 (linearly dependent). 0 disables. See Sweep_Config.lin_dep_tol
+LIN_DEP_TOL = 1e-8
+
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
 cfg = Sweep_Config(
@@ -69,7 +72,6 @@ cfg = Sweep_Config(
     n_increases           = N_INCREASES,
     n_step                = N_STEP,
     use_contraction       = USE_CONTRACTION,
-    m_params              = M_PARAMS,
     generator             = GENERATOR,
     sigma                 = SIGMA,
     generation_size       = GENERATION_SIZE,
@@ -85,5 +87,6 @@ cfg = Sweep_Config(
     n1_guess_span         = N1_GUESS_SPAN,
     wall_search           = WALL_SEARCH,
     wall_confirm          = WALL_CONFIRM,
+    lin_dep_tol           = LIN_DEP_TOL,
 )
 run_sweep(cfg)

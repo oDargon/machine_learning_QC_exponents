@@ -105,6 +105,8 @@ def run_target(cfg: Target_Config) -> Path | None:
     ATOM      = meta["atom"]
     M_PARAMS  = int(meta["M"])
     GENERATOR = meta.get("generator", "polynomial")
+    if M_PARAMS != 2:
+        raise SystemExit(f"{RESULTS_CSV} has M={M_PARAMS}; target supports only M=2 (the sweep CSV stores a0, a1 only)")
 
     lines = []
     def out(s=""):

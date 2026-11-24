@@ -21,26 +21,21 @@ TEMPLATE_CONT  = "temp_cont.inp"
 RUN_SCRIPT     = "run.sh"
 EXTRACT_SCRIPT = "extract.sh"
 
-# match the sweep. False: everything uncontracted. True: A's other shells keep the
-# contraction stored in --backdrop (the sweep's <atom>_backdrop_contracted.expo).
-USE_CONTRACTION = False
-
 TOTAL_CORES    = 6       # max MOLCAS jobs run concurrently
 CBS_MIN_POINTS = 3       # smallest tail window used when gauging the E_inf band
 
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
 cfg = Inverse_Target_Config(
-    submit_dir      = _args.submit_dir,
-    work_dir        = _args.work_dir,
-    results         = _args.results,
-    backdrop        = _args.backdrop,
-    compare         = _args.compare,
-    template_cont   = TEMPLATE_CONT,
-    run_script      = RUN_SCRIPT,
-    extract_script  = EXTRACT_SCRIPT,
-    use_contraction = USE_CONTRACTION,
-    total_cores     = TOTAL_CORES,
-    cbs_min_points  = CBS_MIN_POINTS,
+    submit_dir     = _args.submit_dir,
+    work_dir       = _args.work_dir,
+    results        = _args.results,
+    backdrop       = _args.backdrop,
+    compare        = _args.compare,
+    template_cont  = TEMPLATE_CONT,
+    run_script     = RUN_SCRIPT,
+    extract_script = EXTRACT_SCRIPT,
+    total_cores    = TOTAL_CORES,
+    cbs_min_points = CBS_MIN_POINTS,
 )
 run_inverse_target(cfg)

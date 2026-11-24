@@ -79,6 +79,11 @@ class Optimize_Config:
     # fully deterministic under a seed (one shell at a time, fixed order).
     seed: int | None = None
 
+    # a candidate whose optimized shell has an overlap-matrix min eigenvalue below this is not run in
+    # MOLCAS but scored 2e6 (CASPT2 there is noise that can come out spuriously low, and it can hang
+    # MOLCAS). Same default and reasoning as Sweep_Config.lin_dep_tol. 0 disables.
+    lin_dep_tol: float = 1e-8
+
     # Subdirectory of submit_dir/results to write this run's outputs into. Empty means
     # results/ itself, which is the historical behaviour. Set it when several runs share a
     # submit dir — otherwise each run overwrites the previous one's trace, log and best.expo.
@@ -306,6 +311,7 @@ def run_joint(cfg, basis, base, contract_frozen, objective, full_objective,
             use_tempering          = use_tempering_shell,
             n_tempering_params     = shell_n_tempering,
             seed                   = cfg.seed,
+            lin_dep_tol            = cfg.lin_dep_tol,
         )
 
     if not optimizers:
@@ -681,6 +687,7 @@ def run_cyclic(cfg, basis, base, contract_frozen, objective, full_objective,
                 stop_tol               = cfg.cyclic_stop_tol,
                 seed                   = cfg.seed,
                 resume_state           = resume.get(shell) if cfg.cyclic_warm_restart else None,
+                lin_dep_tol            = cfg.lin_dep_tol,
             )
             opt.start(threads=threads_shell[shell])
             opt.wait()

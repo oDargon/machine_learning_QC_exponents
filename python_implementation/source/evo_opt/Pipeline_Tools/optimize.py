@@ -73,6 +73,10 @@ CROSS_SHELL_WARMUP_GENS = 20   # all shells must reach this many gens before cou
 SEED = None   # int -> every per-shell CMA uses it (reproducible shell trajectories); None -> random.
               # Global-eval timing is wall-clock driven, so the global trace is not reproducible either way.
 
+# --- linear dependence ---
+LIN_DEP_TOL = 1e-8   # a candidate whose optimized shell has an overlap min eigenvalue below this skips
+                     # MOLCAS and is recorded as 2e6. 0 disables. See Optimize_Config.lin_dep_tol
+
 # ═══ END USER CONFIGURATION ═══════════════════════════════════════════════════
 
 cfg = Optimize_Config(
@@ -108,5 +112,6 @@ cfg = Optimize_Config(
     enable_cross_shell       = ENABLE_CROSS_SHELL,
     cross_shell_warmup_gens  = CROSS_SHELL_WARMUP_GENS,
     seed                     = SEED,
+    lin_dep_tol              = LIN_DEP_TOL,
 )
 run_optimize(cfg)

@@ -30,25 +30,29 @@ TEMPLATE_FULL   = "temp_full.inp"   # fully uncontracted
 RUN_SCRIPT      = "run.sh"
 EXTRACT_SCRIPT  = "extract.sh"
 USE_CONTRACTION = True
+LIN_DEP_TOL     = 1e-8     # sweep + optimize: a shell with overlap min eigenvalue below this skips MOLCAS, recorded as 2e6
 
 
 
 # ── stage 1: SWEEP (CMA-ES tempering convergence over N, per shell) ──
-SHELLS            = [0, 1, 2, 3, 4]   # all swept independently, in parallel
-N_INCREASES       = 5        # per shell: this many points beyond N_start
-N_STEP            = 1        # gap between successive N points
-M_PARAMS          = 2        # tempering polynomial params (2 -> 2D tempering)
-GENERATOR         = "polynomial"
-SWEEP_SIGMA       = 0.1      # 0.01 stalls at the start on large N (see Sweep_Config.sigma)
-SWEEP_GEN_SIZE    = 6
-SWEEP_MAX_GENS    = 100
-SWEEP_STOPPING    = True     # early stop once the last 5 generation bests agree to SWEEP_STOP_TOL
-SWEEP_STOP_TOL    = 1e-6     # that threshold (Eh); floored by the QC code's printed precision
-TOTAL_THREADS     = 6        # core budget: run TOTAL_THREADS // THREADS_PER_SHELL shells at once 
-THREADS_PER_SHELL = 3
-USE_EXTRAPOLATION = True
-N_FIT_POINTS      = 4
-SEED              = None      # int -> every CMA uses it; None -> random
+SHELLS                = [0, 1, 2, 3, 4]   # all swept independently, in parallel
+N_INCREASES           = 5        # per shell: this many points beyond N_start
+N_STEP                = 1        # gap between successive N points
+GENERATOR             = "polynomial"
+SWEEP_SIGMA           = 0.1      # 0.01 stalls at the start on large N (see Sweep_Config.sigma)
+SWEEP_GEN_SIZE        = 6
+SWEEP_MAX_GENS        = 100
+SWEEP_STOPPING        = True     # early stop once the last 5 generation bests agree to SWEEP_STOP_TOL
+SWEEP_STOP_TOL        = 1e-6     # that threshold (Eh); floored by the QC code's printed precision
+TOTAL_THREADS         = 6        # core budget: run TOTAL_THREADS // THREADS_PER_SHELL shells at once
+THREADS_PER_SHELL     = 3
+USE_EXTRAPOLATION     = True
+N_FIT_POINTS          = 4
+SEED                  = None     # int -> every CMA uses it; None -> random
+MAX_CONSECUTIVE_FAILS = 3        # more than this many failed points in a row ends that shell
+N1_GUESS_SPAN         = 3.0      # a shell starting at N=1: guessed ln(alpha_max/alpha_min) for its next N
+WALL_SEARCH           = True     # multi-ravine safety on the first N (see Sweep_Config.wall_search); on in the Li/B/P tests
+WALL_CONFIRM          = 1.0      # spacings the energy must keep rising for to count as the wall
 
 
 
@@ -155,29 +159,33 @@ if SWEEP_ALREADY_MADE:
     e_initial = None   # initial-basis energy isn't computed when the sweep is skipped
 else:
     sweep_cfg = Sweep_Config(
-        submit_dir        = _args.submit_dir,
-        work_dir          = _args.work_dir,
-        expo_file         = EXPO_FILE,
-        template_cont     = TEMPLATE_CONT,
-        template_full     = TEMPLATE_FULL,
-        run_script        = RUN_SCRIPT,
-        extract_script    = EXTRACT_SCRIPT,
-        shells            = SHELLS,
-        n_increases       = N_INCREASES,
-        n_step            = N_STEP,
-        use_contraction   = USE_CONTRACTION,
-        m_params          = M_PARAMS,
-        generator         = GENERATOR,
-        sigma             = SWEEP_SIGMA,
-        generation_size   = SWEEP_GEN_SIZE,
-        max_generations   = SWEEP_MAX_GENS,
-        use_stopping      = SWEEP_STOPPING,
-        stop_tol          = SWEEP_STOP_TOL,
-        total_threads     = TOTAL_THREADS,
-        threads_per_shell = THREADS_PER_SHELL,
-        use_extrapolation = USE_EXTRAPOLATION,
-        n_fit_points      = N_FIT_POINTS,
-        seed              = SEED,
+        submit_dir            = _args.submit_dir,
+        work_dir              = _args.work_dir,
+        expo_file             = EXPO_FILE,
+        template_cont         = TEMPLATE_CONT,
+        template_full         = TEMPLATE_FULL,
+        run_script            = RUN_SCRIPT,
+        extract_script        = EXTRACT_SCRIPT,
+        shells                = SHELLS,
+        n_increases           = N_INCREASES,
+        n_step                = N_STEP,
+        use_contraction       = USE_CONTRACTION,
+        generator             = GENERATOR,
+        sigma                 = SWEEP_SIGMA,
+        generation_size       = SWEEP_GEN_SIZE,
+        max_generations       = SWEEP_MAX_GENS,
+        use_stopping          = SWEEP_STOPPING,
+        stop_tol              = SWEEP_STOP_TOL,
+        total_threads         = TOTAL_THREADS,
+        threads_per_shell     = THREADS_PER_SHELL,
+        use_extrapolation     = USE_EXTRAPOLATION,
+        n_fit_points          = N_FIT_POINTS,
+        seed                  = SEED,
+        max_consecutive_fails = MAX_CONSECUTIVE_FAILS,
+        n1_guess_span         = N1_GUESS_SPAN,
+        wall_search           = WALL_SEARCH,
+        wall_confirm          = WALL_CONFIRM,
+        lin_dep_tol           = LIN_DEP_TOL,
     )
     print("\n########## STAGE 1/3 : SWEEP ##########\n")
     csv_path, e_initial = run_sweep(sweep_cfg)
@@ -233,6 +241,7 @@ optimize_cfg = Optimize_Config(
     enable_cross_shell       = ENABLE_CROSS_SHELL,
     cross_shell_warmup_gens  = CROSS_SHELL_WARMUP_GENS,
     seed                     = OPT_SEED,
+    lin_dep_tol              = LIN_DEP_TOL,
 )
 print("\n########## STAGE 3/3 : OPTIMIZE ##########\n")
 best_exp, best_energy, e_target_unopt = run_optimize(optimize_cfg)

@@ -1,5 +1,6 @@
 import csv
 import shutil
+import traceback
 from pathlib import Path
 from dataclasses import dataclass, field
 from threading import Thread, Semaphore, Lock
@@ -11,7 +12,7 @@ from ..job_manager import Job_Manager_Config
 from ..common import Executor_Type, L_LABELS
 from ..cma_opt_2 import evaluate_initial
 from ..tempering import from_registry
-from ..cma_shell_opt import Shell_Optimization
+from ..cma_shell_opt import Shell_Optimization, shell_overlap_min_eig, LIN_DEP_ENERGY
 from ..cbs_engine import _extrapolate_start   # N-aware geom extrapolation (handles N gaps)
 
 
@@ -32,7 +33,7 @@ class Sweep_Config:
 
     use_contraction: bool = True
 
-    m_params:        int   = 2            # 2D tempering
+    m_params:        int   = 2            # 2D tempering; only 2 is supported (start extrapolation, wall search and CSV are 2-parameter)
     generator:       str   = "polynomial" # tempering generator (recorded in the CSV #META header)
     # CMA step-size (CMA adapts it internally from here). 0.1, not 0.01: a step of sigma in a1
     # moves the spacing ln beta by only sigma/(N-1), so at 0.01 the energy change per step fell
@@ -75,8 +76,16 @@ class Sweep_Config:
     wall_search:  bool  = False
     wall_confirm: float = 1.0
 
+    # a point whose swept shell has an overlap-matrix min eigenvalue below this is not run in MOLCAS
+    # but scored 2e6 (CASPT2 there is noise that can come out spuriously low, and it can hang MOLCAS).
+    # B p's spurious lows had 1.4e-9 and 3.2e-9; the closest real optimum on Li/B/P has 1e-5. 0 disables.
+    lin_dep_tol: float = 1e-8
+
 
 def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
+    if cfg.m_params != 2:
+        raise ValueError(f"m_params={cfg.m_params}: the sweep supports only 2 (its start extrapolation, "
+                         f"wall search and CSV columns are 2-parameter)")
     SUBMIT_DIR = Path(cfg.submit_dir).resolve()
     WORK_DIR   = (Path(cfg.work_dir) / "sweep").resolve()
 
@@ -125,6 +134,9 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
         base      = exp.copy(no_energy=True)
         e_initial = None   # no bootstrap eval when contraction is off
 
+    crashed     = {}   # shell -> traceback of a crash outside the CMA (the shell's later N are missing)
+    cma_crashes = []   # (shell, N) whose CMA crashed; their rows hold the best energy before the crash
+
     def cma_converge(shell, codec, N, start_params, seed, threads):
         """One 2D CMA-ES run at fixed N, warm-started from start_params, using `threads`
         cores. Returns (best_energy, best_params, gens, history, e_start). Dirs removed after."""
@@ -136,8 +148,12 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
         if not cfg.use_contraction:
             work.uncontract_all()
 
-        init    = evaluate_initial(work, energy_objective, init_dir, threads=threads,
-                                   subdir_name="init", contract_frozen_shells=cfg.use_contraction)
+        if shell_overlap_min_eig(work.exponents[shell], shell) < cfg.lin_dep_tol:
+            init = work
+            init.assign_results(energy=LIN_DEP_ENERGY)
+        else:
+            init = evaluate_initial(work, energy_objective, init_dir, threads=threads,
+                                    subdir_name="init", contract_frozen_shells=cfg.use_contraction)
         e_start = float(init.energy)
 
         opt = Shell_Optimization(
@@ -155,13 +171,15 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
             use_stopping           = cfg.use_stopping,
             stop_tol               = cfg.stop_tol,
             seed                   = seed,
+            lin_dep_tol            = cfg.lin_dep_tol,
         )
         opt.start(threads=threads)
         opt.wait()
 
         if opt.exception is not None:
             print(f"  [WARNING] shell {shell} N={N}: CMA crashed ({opt.exception!r}); "
-                  f"recording the initial energy.", flush=True)
+                  f"recording its best energy before the crash (the start energy if none).", flush=True)
+            cma_crashes.append((shell, N))
 
         state  = opt.get_state()
         e_best = float(state["best_energy"]) if state["best_energy"] is not None else float(init.energy)
@@ -321,7 +339,8 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
 
             if e_best >= 1e6:
                 n_failed += 1
-                print(f"  [WARNING] shell {shell} ({lbl}) N={N}: failed (1e6 sentinel), "
+                why = "linearly dependent, 2e6 sentinel" if e_best >= LIN_DEP_ENERGY else "1e6 sentinel"
+                print(f"  [WARNING] shell {shell} ({lbl}) N={N}: failed ({why}), "
                       f"{n_failed} in a row — left out of the extrapolation", flush=True)
                 if n_failed > cfg.max_consecutive_fails:
                     print(f"  [WARNING] shell {shell} ({lbl}): more than {cfg.max_consecutive_fails} "
@@ -331,7 +350,15 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
             n_failed = 0
             opt_hist.append((N, float(best[0]), float(best[1])))
 
-    threads = [Thread(target=shell_worker, args=(s,), daemon=True) for s in cfg.shells]
+    def shell_worker_logged(shell):
+        try:
+            shell_worker(shell)
+        except Exception:
+            crashed[shell] = traceback.format_exc()
+            print(f"  [ERROR] shell {shell} ({L_LABELS[shell]}) crashed; its remaining N are missing "
+                  f"from the CSV\n{crashed[shell]}", flush=True)
+
+    threads = [Thread(target=shell_worker_logged, args=(s,), daemon=True) for s in cfg.shells]
     for t in threads:
         t.start()
     for t in threads:
@@ -350,4 +377,10 @@ def run_sweep(cfg: Sweep_Config) -> tuple[Path, float | None]:
 
     print(f"\nsaved {ordered_path}       (ordered)")
     print(f"saved {live_path}  (live, completion order)")
+    for s in sorted(crashed):
+        print(f"[ERROR] shell {s} ({L_LABELS[s]}) crashed mid-sweep; its rows stop before the crash "
+              f"(traceback above)")
+    for k in range(len(cma_crashes)):
+        print(f"[WARNING] shell {cma_crashes[k][0]} N={cma_crashes[k][1]}: CMA crashed; its row holds the "
+              f"best energy before the crash, not a converged optimum")
     return ordered_path, e_initial

@@ -1,9 +1,9 @@
 from copy import deepcopy
 from pathlib import Path
 from threading import Thread, Lock, Event
-from numpy import exp, log, float64, ndarray, array, array_equal, inf
+from numpy import exp, log, sqrt, outer, float64, ndarray, array, array_equal, inf, nan
 from numpy.linalg import eigvalsh
-from numpy.random import default_rng
+from numpy.random import default_rng, RandomState
 from .exponent_handler import Exponent_Set
 from .objectives import Objective
 from .cma_logging import FixedCountLogger
@@ -11,6 +11,31 @@ from .tempering import from_registry, Tempering_Codec
 import shutil
 import time
 import cma
+
+
+LIN_DEP_ENERGY = 2e6   # recorded instead of running MOLCAS on a linearly dependent shell (1e6 = MOLCAS failure)
+
+
+def shell_overlap_min_eig(exponents, l: int) -> float:
+    # smallest eigenvalue of the overlap matrix of the shell's normalized primitives. On one atom
+    # different l are orthogonal, so the per-shell value is the whole basis' linear dependence
+    a = array(exponents, dtype=float64)
+    if len(a) < 2:
+        return 1.0
+    S = (2.0 * sqrt(outer(a, a)) / (a[:, None] + a[None, :])) ** (l + 1.5)
+    return float(eigvalsh(S)[0])
+
+
+class _Randn:
+    # cma by default samples from numpy's global generator and re-seeds it every time a CMA is
+    # built, so CMAs in parallel threads reset and interleave each other's draws. A private legacy
+    # RandomState gives each CMA exactly the numbers it would get running alone. A class, not a
+    # lambda, so deepcopy (cyclic warm restart) copies the stream instead of sharing it.
+    def __init__(self, seed: int | None):
+        self._rs = RandomState(seed)
+
+    def __call__(self, *shape):
+        return self._rs.randn(*shape)
 
 
 def _last5_converged(recent_best_energies: list, tol: float = 1e-6) -> bool:
@@ -58,6 +83,7 @@ class Shell_Optimization:
         n_tempering_params: int       = 6,
         seed: int | None              = None,
         resume_state: dict | None     = None,
+        lin_dep_tol: float            = 0.0,
     ) -> None:
         self._start_exp              = start_exp
         self._start_energy           = start_energy
@@ -77,6 +103,7 @@ class Shell_Optimization:
         self._n_tempering_params     = n_tempering_params
         self._seed                   = seed
         self._resume_state           = resume_state
+        self._lin_dep_tol            = lin_dep_tol
 
         self._lock        = Lock()
         self._stop_event  = Event()
@@ -208,6 +235,22 @@ class Shell_Optimization:
             return None
         return state["es"]
 
+    def _evaluate(self, exp_objects: list, batch_dir: Path, threads: int) -> list:
+        # a linearly dependent active shell is not sent to MOLCAS: CASPT2 on it is noise that can
+        # come out far too low (it is not an upper bound) and it can hang MOLCAS' Gram-Schmidt
+        results = list(exp_objects)
+        run_idx = []
+        for i in range(len(exp_objects)):
+            if shell_overlap_min_eig(exp_objects[i].exponents[self._active_shell], self._active_shell) < self._lin_dep_tol:
+                exp_objects[i].assign_results(energy=LIN_DEP_ENERGY)
+            else:
+                run_idx.append(i)
+        if run_idx:
+            ran = self._objective.evaluate_batch([exp_objects[i] for i in run_idx], work_dir=batch_dir, threads=threads)
+            for k in range(len(run_idx)):
+                results[run_idx[k]] = ran[k]
+        return results
+
     def update_root_exponent(self, new_exp: Exponent_Set) -> None:
         with self._lock:
             self._pending_root_exp = new_exp
@@ -321,7 +364,7 @@ class Shell_Optimization:
                             new_exp.uncontract_all()
                         exp_objects.append(new_exp)
 
-                    results  = self._objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)
+                    results  = self._evaluate(exp_objects, batch_dir, threads)
                     energies = array([r.energy for r in results], dtype=float64)
                     order    = energies.argsort()
                     best_idx = int(order[0])
@@ -380,10 +423,9 @@ class Shell_Optimization:
             resumed = es is not None
 
             if es is None:
-                cma_opts = {'popsize': self._generation_size}
-                if self._seed is not None:
-                    cma_opts['seed'] = self._seed
-                es = cma.CMAEvolutionStrategy(x0, self._sigma, cma_opts)
+                # seed=nan: cma leaves the global generator alone and doesn't warn that seed is unused
+                cma_opts = {'popsize': self._generation_size, 'randn': _Randn(self._seed), 'seed': nan}
+                es       = cma.CMAEvolutionStrategy(x0, self._sigma, cma_opts)
 
             if not resumed and self._cma_state is not None:
                 es.mean  = self._cma_state[0]
@@ -437,7 +479,7 @@ class Shell_Optimization:
                         new_exp.uncontract_all()
                     exp_objects.append(new_exp)
 
-                results     = self._objective.evaluate_batch(exp_objects, work_dir=batch_dir, threads=threads)
+                results     = self._evaluate(exp_objects, batch_dir, threads)
                 energies    = array([r.energy for r in results], dtype=float64)
                 best_idx    = int(energies.argmin())
                 best_energy = energies[best_idx]

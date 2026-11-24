@@ -157,8 +157,10 @@ class Job_Manager:
 
         log_flag = True if (this_log or self.full_logging) else False
 
+        # explicit names carry the token too: the name is the MOLCAS Project, so two runs using
+        # the same names at the same time would otherwise share scratch
         if name:
-            job_name = name
+            job_name = f"{name}_{self._job_token[:8]}"
         else:
             job_name = f"job_{self._job_token}_{self.job_counter}"
 
